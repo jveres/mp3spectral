@@ -1,0 +1,1353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>WebGL MP3 Visualizer</title>
+<style>
+  :root {
+    --bg: #05060a;
+    --panel: rgba(15, 18, 28, 0.55);
+    --panel-border: rgba(255, 255, 255, 0.08);
+    --text: #e8ecf3;
+    --muted: #8a93a6;
+    --accent: #7df9ff;
+    --accent2: #ff5cc8;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  canvas#gl {
+    position: fixed; inset: 0;
+    width: 100%; height: 100%;
+    display: block;
+    z-index: 0;
+  }
+  .ui {
+    position: fixed; inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    padding: 18px;
+    gap: 12px;
+  }
+  .ui > * { pointer-events: auto; }
+
+  body.idle { cursor: none; }
+  .ui, .ui * { transition: opacity 400ms ease, transform 400ms ease; }
+  body.idle .ui > header { opacity: 0; transform: translateY(-8px); pointer-events: none; }
+  body.idle .ui > div:last-child { opacity: 0; transform: translateY(8px); pointer-events: none; }
+  body.idle .ui > div:last-child * { pointer-events: none; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+  }
+  .brand {
+    font-weight: 600; letter-spacing: 0.4px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    font-size: 14px;
+  }
+  .hint { color: var(--muted); font-size: 12px; }
+
+  .playlist {
+    align-self: end;
+    justify-self: start;
+    width: min(360px, 92vw);
+    max-height: 50vh;
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    border-radius: 14px;
+    padding: 8px;
+  }
+  .playlist h3 {
+    margin: 6px 8px 8px;
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 1.4px; text-transform: uppercase;
+    color: var(--muted);
+  }
+  .track {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text);
+    transition: background 120ms;
+  }
+  .track:hover { background: rgba(255,255,255,0.05); }
+  .track.active {
+    background: linear-gradient(90deg, rgba(125,249,255,0.18), rgba(255,92,200,0.12));
+  }
+  .track .idx { color: var(--muted); font-variant-numeric: tabular-nums; width: 22px; }
+  .track .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .track .dur { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .track button {
+    background: none; border: 0; color: var(--muted); cursor: pointer;
+    font-size: 14px; padding: 2px 4px; border-radius: 6px;
+  }
+  .track button:hover { color: #fff; background: rgba(255,255,255,0.08); }
+
+  .empty {
+    color: var(--muted); text-align: center; padding: 16px 12px; font-size: 13px;
+  }
+
+  .player {
+    align-self: end;
+    width: 100%;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    border-radius: 14px;
+  }
+  .controls { display: flex; align-items: center; gap: 6px; }
+  .btn {
+    appearance: none; border: 0; background: rgba(255,255,255,0.06);
+    color: var(--text);
+    width: 36px; height: 36px; border-radius: 50%;
+    display: inline-grid; place-items: center;
+    cursor: pointer; transition: background 120ms, transform 120ms;
+  }
+  .btn:hover { background: rgba(255,255,255,0.12); }
+  .btn:active { transform: scale(0.96); }
+  .btn.toggle.on {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #08101a;
+  }
+  .btn.play {
+    width: 44px; height: 44px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #08101a;
+  }
+  .btn svg { width: 16px; height: 16px; }
+  .btn.play svg { width: 18px; height: 18px; }
+
+  .scrub { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+  .time { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 38px; }
+  .time.right { text-align: right; }
+  .bar {
+    appearance: none;
+    width: 100%; height: 4px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 99px;
+    outline: none;
+    cursor: pointer;
+  }
+  .bar::-webkit-slider-thumb {
+    appearance: none;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: #fff; box-shadow: 0 0 0 4px rgba(125,249,255,0.18);
+  }
+  .bar::-moz-range-thumb {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: #fff; border: 0;
+  }
+
+  .right { display: flex; align-items: center; gap: 10px; }
+  .vol { width: 90px; }
+  .now {
+    max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--muted); font-size: 12px;
+  }
+
+  .drop-overlay {
+    position: fixed; inset: 0;
+    background: rgba(5, 8, 18, 0.55);
+    backdrop-filter: blur(6px);
+    z-index: 5;
+    display: grid; place-items: center;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 150ms;
+  }
+  .drop-overlay.show { opacity: 1; pointer-events: auto; }
+  .drop-card {
+    border: 2px dashed rgba(125,249,255,0.6);
+    color: #fff;
+    padding: 32px 44px;
+    border-radius: 18px;
+    font-size: 16px;
+    background: rgba(15,18,28,0.6);
+    box-shadow: 0 0 0 6px rgba(125,249,255,0.06);
+  }
+
+  .welcome {
+    position: fixed; inset: 0;
+    display: grid; place-items: center;
+    z-index: 2;
+    pointer-events: none;
+    text-align: center;
+  }
+  .welcome.hidden { display: none; }
+  .welcome-card {
+    pointer-events: auto;
+    padding: 30px 36px;
+    border-radius: 18px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    max-width: 460px;
+  }
+  .welcome h1 {
+    margin: 0 0 8px; font-size: 22px; font-weight: 600;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .welcome p { margin: 0 0 18px; color: var(--muted); font-size: 14px; line-height: 1.5; }
+  .file-btn {
+    appearance: none; border: 0; cursor: pointer;
+    padding: 10px 18px; border-radius: 999px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #08101a; font-weight: 600; font-size: 13px;
+    letter-spacing: 0.3px;
+  }
+
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 99px; }
+</style>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+
+  <div class="welcome" id="welcome">
+    <div class="welcome-card">
+      <h1>WebGL MP3 Visualizer</h1>
+      <p>Drop MP3 files anywhere on the page to build a playlist, or pick files manually. Audio plays locally — nothing is uploaded.</p>
+      <button class="file-btn" id="pickBtn">Choose MP3 files</button>
+    </div>
+  </div>
+
+  <div class="ui">
+    <header>
+      <div class="brand">▮▮ Spectral</div>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <div class="hint" id="hint" style="cursor:pointer; user-select:none;" title="Click to choose MP3 files">Drop .mp3 files anywhere</div>
+        <button class="btn toggle" id="shuffle" title="Shuffle / random play" style="width:auto; padding:0 12px; border-radius:18px; font-size:12px;">Shuffle</button>
+        <button class="btn toggle" id="loop" title="Loop playlist" style="width:auto; padding:0 12px; border-radius:18px; font-size:12px;">Loop</button>
+        <button class="btn toggle" id="auto" title="Auto-switch effect each track" style="width:auto; padding:0 12px; border-radius:18px; font-size:12px;">Auto FX</button>
+        <button class="btn" id="fx" title="Next effect (E)" style="width:auto; padding:0 14px; border-radius:18px; font-size:12px; letter-spacing:0.4px;">
+          <span id="fxName">Nebula</span>
+        </button>
+        <button class="btn" id="fs" title="Fullscreen (F)">
+          <svg id="fsIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M5 5h6V3H3v8h2V5zm14 0v6h2V3h-8v2h6zM5 19v-6H3v8h8v-2H5zm14-6v6h-6v2h8v-8h-2z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div></div>
+
+    <div style="display:grid; grid-template-columns: 1fr auto; gap: 12px; align-items: end;">
+      <div class="playlist" id="playlist">
+        <h3>Playlist</h3>
+        <div class="empty" id="empty">No tracks yet — drop MP3s here.</div>
+        <div id="tracks"></div>
+      </div>
+
+      <div class="player" style="min-width: min(560px, 60vw);">
+        <div class="controls">
+          <button class="btn" id="prev" title="Previous">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6 9 12l11 6V6z"/></svg>
+          </button>
+          <button class="btn play" id="play" title="Play/Pause">
+            <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7L8 5z"/></svg>
+          </button>
+          <button class="btn" id="next" title="Next">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6v12l11-6L4 6z"/></svg>
+          </button>
+        </div>
+
+        <div class="scrub">
+          <div class="time" id="cur">0:00</div>
+          <input class="bar" id="seek" type="range" min="0" max="1000" value="0" step="1" />
+          <div class="time right" id="dur">0:00</div>
+        </div>
+
+        <div class="right">
+          <div class="now" id="now">—</div>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="color:var(--muted)">
+            <path d="M3 10v4h4l5 5V5L7 10H3zm13.5 2A4.5 4.5 0 0 0 14 7.97v8.06A4.5 4.5 0 0 0 16.5 12z"/>
+          </svg>
+          <input class="bar vol" id="vol" type="range" min="0" max="100" value="85" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="fileInput" accept="audio/mpeg,audio/mp3,.mp3" multiple style="display:none" />
+
+  <div class="drop-overlay" id="drop">
+    <div class="drop-card">Drop MP3s to add to playlist</div>
+  </div>
+
+<script type="module">
+'use strict';
+
+// ---------- WebGL Visualizer ----------
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl', { antialias: false, premultipliedAlpha: false, alpha: false });
+if (!gl) {
+  document.body.innerHTML = '<p style="color:#fff;padding:24px">WebGL is not available in this browser.</p>';
+  throw new Error('no webgl');
+}
+
+const VS = `
+attribute vec2 aPos;
+varying vec2 vUv;
+void main() {
+  vUv = aPos * 0.5 + 0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+`;
+
+const FS_COMMON = `
+precision highp float;
+varying vec2 vUv;
+uniform vec2  uRes;
+uniform float uTime;
+uniform float uBass;
+uniform float uMid;
+uniform float uHi;
+uniform float uLevel;
+uniform float uBeat;   // transient envelope (0..~1)
+uniform float uBeatT;  // seconds since last beat
+uniform float uPulse;  // monotonic clock that surges on beats
+uniform sampler2D uSpec;
+
+#define PI 3.14159265359
+
+mat2 rot(float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c); }
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+float noise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  vec2 u = f*f*(3.0 - 2.0*f);
+  return mix(a,b,u.x) + (c - a)*u.y*(1.0 - u.x) + (d - b)*u.x*u.y;
+}
+float fbm(vec2 p){
+  float v = 0.0, amp = 0.5;
+  for (int i=0;i<5;i++){ v += amp*noise(p); p = p*2.02 + 13.7; amp *= 0.5; }
+  return v;
+}
+vec3 palette(float t, vec3 a, vec3 b, vec3 c, vec3 d){
+  return a + b*cos(6.28318*(c*t + d));
+}
+`;
+
+// ---- Nebula: FBM clouds + radial spectrum ring ----
+const FS_NEBULA = FS_COMMON + `
+void main(){
+  vec2 uv = (gl_FragCoord.xy * 2.0 - uRes.xy) / min(uRes.x, uRes.y);
+  float r = length(uv);
+  float a = atan(uv.y, uv.x);
+  float t = uTime * 0.08;
+  vec2 q = uv * (1.4 + 0.5*uBass) + vec2(t, -t*0.6);
+  q *= rot(0.2 + uMid*0.6);
+  float n = fbm(q + fbm(q*1.7 + t));
+  vec3 col = palette(n + uHi*0.3 + t,
+    vec3(0.5,0.4,0.55), vec3(0.5,0.45,0.5), vec3(1.0), vec3(0.0,0.33,0.67));
+  col *= 0.55 + 0.45 * smoothstep(1.4, 0.0, r);
+  float idx = (a / (2.0*PI)) + 0.5;
+  idx = mod(idx + uTime*0.02, 1.0);
+  float spec = texture2D(uSpec, vec2(idx, 0.5)).r;
+  float ringR = 0.42 + uBass*0.10;
+  float bandWidth = 0.005 + spec*0.32 + uLevel*0.05;
+  float ring = smoothstep(bandWidth, 0.0, abs(r - ringR));
+  vec3 ringCol = palette(idx + uTime*0.05, vec3(0.6,0.5,0.55), vec3(0.5), vec3(1.0), vec3(0.0,0.15,0.30));
+  col += ring * ringCol * (1.6 + 2.5*spec);
+  float bars = smoothstep(ringR, ringR + 0.55*spec, r) * smoothstep(ringR + 0.6*spec, ringR, r);
+  col += bars * ringCol * 0.6;
+  float glow = exp(-6.0 * r) * (0.6 + 2.5 * uBass);
+  col += glow * vec3(0.45, 0.85, 1.0);
+  float spark = step(0.997, hash(floor(gl_FragCoord.xy * (1.0 + uHi*4.0)) + floor(uTime*30.0)));
+  col += spark * vec3(1.0) * (0.3 + uHi);
+  col *= smoothstep(1.6, 0.2, r);
+  col += (hash(gl_FragCoord.xy + uTime) - 0.5) * 0.025;
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// ---- Star Nest: ported from Pablo Roman Andrioli (Kali), Shadertoy XlfGRj ----
+const FS_GALAXY = FS_COMMON + `
+#define SN_ITERS    14
+#define SN_VOLSTEPS 16
+
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes.xy - 0.5;
+  uv.y *= uRes.y / uRes.x;
+
+  float zoom       = 0.78 - uBass*0.04;
+  float tile       = 0.85;
+  float formuparam = 0.530 + uMid*0.02;
+  float speed      = 0.0008;                     // very slow drift
+  float brightness = 0.0015 + uBeat*0.0020;
+  float darkmatter = 0.300;
+  float distfading = 0.760;
+  float saturation = 0.800 + uHi*0.15;
+
+  vec3 dir = vec3(uv*zoom, 1.0);
+  float t = uTime*speed + 0.25;
+
+  // very gentle auto rotation
+  float a1 = 0.5 + uTime*0.004;
+  float a2 = 0.8 + uTime*0.003;
+  mat2 r1 = rot(a1);
+  mat2 r2 = rot(a2);
+  dir.xz *= r1; dir.xy *= r2;
+  vec3 from = vec3(1.0, 0.5, 0.5);
+  from += vec3(t*0.5, t*0.3, -t*0.4);
+  from.xz *= r1; from.xy *= r2;
+
+  // volumetric rendering
+  float s = 0.1, fade = 1.0;
+  vec3 v = vec3(0.0);
+  for (int r = 0; r < SN_VOLSTEPS; r++){
+    vec3 p = from + s*dir*0.5;
+    p = abs(vec3(tile) - mod(p, vec3(tile*2.0)));   // kaleidoscopic fold
+    float pa = 0.0, a = 0.0;
+    for (int i = 0; i < SN_ITERS; i++){
+      p = abs(p)/dot(p,p) - formuparam;             // the magic formula
+      a += abs(length(p) - pa);
+      pa = length(p);
+    }
+    float dm = max(0.0, darkmatter - a*a*0.001);
+    a = a*a*a;
+    if (r > 3) fade *= 1.0 - dm;
+    v += fade;
+    v += vec3(s, s*s, s*s*s*s) * a * brightness * fade;
+    fade *= distfading;
+    s += 0.1;
+  }
+  v = mix(vec3(length(v)), v, saturation);
+  vec3 col = v * 0.01;
+  // beat flash + bass swell on top
+  col *= 1.0 + uBass*0.3 + uBeat*0.6;
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+// ---- Synthwave: retro grid, sun, stars, spectrum mountains ----
+const FS_SYNTHWAVE = FS_COMMON + `
+// fade between four classic synthwave palettes
+vec3 swA(float t){ // sky low (horizon)
+  vec3 c0 = vec3(0.40, 0.06, 0.36); // miami magenta
+  vec3 c1 = vec3(0.48, 0.18, 0.10); // sunset orange
+  vec3 c2 = vec3(0.42, 0.10, 0.28); // pink/teal
+  vec3 c3 = vec3(0.30, 0.05, 0.50); // neon purple
+  float f = t*4.0;
+  float k = fract(f);
+  k = smoothstep(0.0, 1.0, k);
+  int i = int(mod(f, 4.0));
+  if (i==0) return mix(c0, c1, k);
+  if (i==1) return mix(c1, c2, k);
+  if (i==2) return mix(c2, c3, k);
+  return mix(c3, c0, k);
+}
+vec3 swB(float t){ // sun top color
+  vec3 c0 = vec3(1.0, 0.85, 0.25);
+  vec3 c1 = vec3(1.0, 0.55, 0.20);
+  vec3 c2 = vec3(1.0, 0.75, 0.85);
+  vec3 c3 = vec3(0.85, 0.45, 1.0);
+  float f = t*4.0;
+  float k = smoothstep(0.0, 1.0, fract(f));
+  int i = int(mod(f, 4.0));
+  if (i==0) return mix(c0, c1, k);
+  if (i==1) return mix(c1, c2, k);
+  if (i==2) return mix(c2, c3, k);
+  return mix(c3, c0, k);
+}
+vec3 swC(float t){ // sun bottom + grid near
+  vec3 c0 = vec3(1.0, 0.25, 0.55);
+  vec3 c1 = vec3(1.0, 0.30, 0.30);
+  vec3 c2 = vec3(0.9,  0.30, 0.75);
+  vec3 c3 = vec3(0.30, 0.55, 1.00);
+  float f = t*4.0;
+  float k = smoothstep(0.0, 1.0, fract(f));
+  int i = int(mod(f, 4.0));
+  if (i==0) return mix(c0, c1, k);
+  if (i==1) return mix(c1, c2, k);
+  if (i==2) return mix(c2, c3, k);
+  return mix(c3, c0, k);
+}
+vec3 swD(float t){ // grid far
+  vec3 c0 = vec3(0.20, 0.85, 1.00);
+  vec3 c1 = vec3(1.00, 0.70, 0.30);
+  vec3 c2 = vec3(0.45, 1.00, 0.80);
+  vec3 c3 = vec3(1.00, 0.30, 0.70);
+  float f = t*4.0;
+  float k = smoothstep(0.0, 1.0, fract(f));
+  int i = int(mod(f, 4.0));
+  if (i==0) return mix(c0, c1, k);
+  if (i==1) return mix(c1, c2, k);
+  if (i==2) return mix(c2, c3, k);
+  return mix(c3, c0, k);
+}
+void main(){
+  vec2 p = (gl_FragCoord.xy * 2.0 - uRes.xy) / uRes.y;
+  float ph = uTime * 0.025; // full cycle every ~40s
+  vec3 cHorizon = swA(ph);
+  vec3 cSunTop  = swB(ph);
+  vec3 cSunBot  = swC(ph);
+  vec3 cGridFar = swD(ph);
+  vec3 cGridNear = cSunBot;
+  // sky gradient
+  float skyT = clamp(p.y*0.5 + 0.5, 0.0, 1.0);
+  vec3 col = mix(
+    mix(cHorizon, cHorizon*0.25, 1.0 - skyT),
+    vec3(0.02,0.01,0.08),
+    smoothstep(0.5, 1.0, skyT)
+  );
+  // sun
+  vec2 sunC = vec2(0.0, 0.18 + uBass*0.04);
+  float sunR = length(p - sunC);
+  float sunMask = smoothstep(0.46, 0.43, sunR);
+  float stripes = step(fract((p.y - sunC.y - uTime*0.15)*9.0), 0.55);
+  float stripeMask = smoothstep(-0.05, 0.45, p.y - sunC.y);
+  vec3 sunCol = mix(cSunTop, cSunBot, clamp((p.y-sunC.y)*1.5+0.5, 0.0, 1.0));
+  col = mix(col, sunCol, sunMask * mix(1.0, stripes, stripeMask));
+  col += sunCol * exp(-sunR*3.0) * (0.35 + 1.5*uBass) * 0.7;
+  // upper-sky stars
+  if (p.y > 0.0) {
+    vec2 g = floor(gl_FragCoord.xy);
+    float h = hash(g);
+    float star = step(0.997, h) * (0.5 + 0.5*sin(uTime*3.0 + h*50.0));
+    col += star * vec3(1.0,0.95,0.9) * (0.5 + uHi*1.5);
+  }
+  // spectrum analyzer bars on horizon
+  {
+    float aspect = uRes.x / uRes.y;
+    float nx = (p.x / aspect) * 0.5 + 0.5;        // 0..1 across full screen
+    float baseY = -0.05;
+    float maxH = 0.55;
+    float bars = 56.0;
+    float bid = floor(nx * bars);
+    float bcenter = (bid + 0.5) / bars;
+    // log-ish freq mapping over the populated band only (skip empty top bins)
+    float bn = clamp(bid/bars, 0.0, 1.0);
+    float specIdx = pow(bn, 1.5) * 0.55 + bn * 0.05;
+    float spec = pow(texture2D(uSpec, vec2(specIdx, 0.5)).r, 0.75);
+    float h = baseY + spec * maxH + 0.02;
+    float halfW = 0.5/bars;
+    float gap   = halfW * 0.30;
+    float inBarX = step(abs((nx - bcenter)), halfW - gap) * step(0.0, nx) * step(nx, 1.0);
+    float inBarY = step(p.y, h) * step(baseY, p.y);
+    // classic VU meter gradient: green -> yellow -> red
+    float ty = clamp((p.y - baseY) / (h - baseY + 1e-4), 0.0, 1.0);
+    vec3 grad = mix(vec3(0.10, 0.95, 0.20), vec3(1.0, 0.95, 0.10), smoothstep(0.0, 0.65, ty));
+    grad = mix(grad, vec3(1.0, 0.18, 0.10), smoothstep(0.65, 1.0, ty));
+    vec3 barCol = grad * (1.0 + 1.6*spec);
+    col = mix(col, barCol, inBarX * inBarY);
+    // top cap glow
+    float cap = smoothstep(0.014, 0.0, abs(p.y - h)) * inBarX;
+    col += cap * vec3(1.0,0.95,0.9) * (0.6 + uHi*1.5);
+    // soft outer glow around each bar
+    float halo = smoothstep(halfW*1.6, 0.0, abs(nx - bcenter)) * inBarY * step(0.0, nx) * step(nx, 1.0);
+    col += halo * grad * spec * 0.35;
+    // floor reflection just below horizon
+    float reflY = (baseY - p.y);
+    if (reflY > 0.0 && reflY < 0.18) {
+      float reflH = baseY + spec*maxH*0.5;
+      float inRefl = step(p.y, baseY) * step(baseY - 0.18, p.y) * inBarX
+                   * step(p.y, baseY) * step(2.0*baseY - reflH, p.y);
+      col += inRefl * grad * 0.25 * (1.0 - reflY/0.18);
+    }
+  }
+  // grid floor
+  if (p.y < -0.05) {
+    float yy = -p.y;
+    float z = 1.0 / yy;
+    float x = p.x * z;
+    float speed = (0.6 + uBass*2.0);
+    float gx = abs(fract(x*0.5 + 0.5) - 0.5);
+    float gz = abs(fract(z*0.6 - uTime*speed) - 0.5);
+    float lx = smoothstep(0.04, 0.0, gx);
+    float lz = smoothstep(0.04, 0.0, gz);
+    float fade = exp(-z*0.06);
+    vec3 gc = mix(cGridNear, cGridFar, clamp(z*0.05, 0.0, 1.0));
+    float grid = max(lx, lz) * fade;
+    col = mix(vec3(0.02,0.0,0.05), gc, grid * (0.7 + uMid));
+    // horizon glow
+    col += cGridNear * exp(-yy*8.0) * 0.4;
+  }
+  // film grain
+  col += (hash(gl_FragCoord.xy + uTime) - 0.5) * 0.02;
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// ---- Kali set fractal IFS ----
+const FS_KALI = FS_COMMON + `
+void main(){
+  vec2 uv = (gl_FragCoord.xy * 2.0 - uRes.xy) / min(uRes.x, uRes.y);
+  uv *= rot(uTime*0.08);
+  uv *= 1.5 + 0.4*sin(uTime*0.2);
+  vec3 p = vec3(uv, 0.6 + 0.3*sin(uTime*0.3));
+  vec3 c = vec3(
+    0.62 + 0.18*sin(uTime*0.27),
+    0.50 + 0.18*cos(uTime*0.31) + uMid*0.15,
+    0.42 + 0.20*sin(uTime*0.19) + uBass*0.25
+  );
+  float trap = 1e10;
+  float orbit = 0.0;
+  for (int i=0;i<14;i++){
+    p = abs(p) / dot(p,p) - c;
+    trap = min(trap, length(p.xy));
+    orbit += length(p);
+  }
+  float v = length(p);
+  vec3 col = palette(orbit*0.05 + uTime*0.05,
+    vec3(0.5), vec3(0.5), vec3(1.0,0.9,0.7), vec3(0.0,0.33,0.67));
+  col *= 0.25 + 0.6*v;
+  // glow on orbit traps
+  col += pow(1.0/(1.0+trap*5.0), 2.5) * vec3(1.0,0.6,0.3) * (0.6 + 2.5*uHi);
+  col += pow(1.0/(1.0+trap*20.0), 1.5) * vec3(0.4,0.7,1.0) * (0.5 + 2.5*uBass);
+  // overall bass swell
+  col *= 1.0 + uLevel*0.3;
+  // vignette
+  col *= smoothstep(1.6, 0.2, length(uv));
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// ---- Plasma Globe: ray-marched volumetric (after nimitz, Shadertoy XsjXRm) ----
+const FS_PLASMA = FS_COMMON + `
+#define NUM_RAYS  5
+#define MAX_ITER  25
+#define VOL_STEPS 12
+#define FAR       6.0
+
+float hash1(float n){ return fract(sin(n)*43758.5453); }
+
+// cheap value 3D noise
+float noise3(vec3 p){
+  vec3 ip = floor(p);
+  vec3 f  = fract(p);
+  f = f*f*(3.0 - 2.0*f);
+  float n = ip.x + ip.y*57.0 + ip.z*113.0;
+  return mix(
+    mix(mix(hash1(n), hash1(n+1.0), f.x),
+        mix(hash1(n+57.0), hash1(n+58.0), f.x), f.y),
+    mix(mix(hash1(n+113.0), hash1(n+114.0), f.x),
+        mix(hash1(n+170.0), hash1(n+171.0), f.x), f.y),
+    f.z);
+}
+
+const mat3 m3 = mat3(
+   0.00,  0.80,  0.60,
+  -0.80,  0.36, -0.48,
+  -0.60, -0.48,  0.64
+);
+
+float flow3(vec3 p, float t){
+  float z = 2.0, rz = 0.0;
+  vec3 bp = p;
+  for (int i = 0; i < 4; i++){
+    p += t*0.1;
+    rz += (sin(noise3(p + t*0.8)*6.0)*0.5 + 0.5) / z;
+    p = mix(bp, p, 0.6);
+    z *= 2.0;
+    p *= 2.01;
+    p = m3 * p;
+  }
+  return rz;
+}
+
+float sins(float x, float t){
+  float rz = 0.0, z = 2.0;
+  for (int i = 0; i < 3; i++){
+    rz += abs(fract(x*1.4) - 0.5) / z;
+    x *= 1.3;
+    z *= 1.15;
+    x -= t*0.65*z;
+  }
+  return rz;
+}
+
+float segm(vec3 p, vec3 a, vec3 b){
+  vec3 pa = p - a;
+  vec3 ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba*h) * 0.5;
+}
+
+vec3 boltPath(float i, float d, float t){
+  vec3 en = vec3(0.0, 0.0, 1.0);
+  float sns2 = sins(d + i*0.5, t)*0.22;
+  float sns  = sins(d + i*0.6, t)*0.21;
+  en.xz = rot((hash1(i*10.569) - 0.5)*6.2 + sns2) * en.xz;
+  en.xy = rot((hash1(i*4.732 ) - 0.5)*6.2 + sns ) * en.xy;
+  return en;
+}
+
+vec2 boltMap(vec3 p, float i, float t){
+  float lp = length(p);
+  vec3 en = boltPath(i, lp, t);
+  float ins  = smoothstep(0.11, 0.46, lp);
+  float outs = 0.15 + smoothstep(0.0, 0.15, abs(lp - 1.0));
+  p *= ins*outs;
+  float id = ins*outs;
+  float rz = segm(p, vec3(0.0), en) - 0.011;
+  return vec2(rz, id);
+}
+
+float boltMarch(vec3 ro, vec3 rd, float startf, float maxd, float j, float t){
+  float h = 0.5;
+  float d = startf;
+  for (int i = 0; i < MAX_ITER; i++){
+    if (abs(h) < 0.001 || d > maxd) break;
+    d += h*1.2;
+    h = boltMap(ro + rd*d, j, t).x;
+  }
+  return d;
+}
+
+vec3 boltVMarch(vec3 ro, vec3 rd, float j, vec3 orig, float t, float specBin){
+  vec3 p = ro;
+  vec3 sum = vec3(0.0);
+  // tint the bolt slightly per spectrum bin
+  vec3 tint = vec3(1.0, 0.85 + 0.15*specBin, 1.05 - 0.20*specBin);
+  for (int i = 0; i < VOL_STEPS; i++){
+    vec2 r = boltMap(p, j, t);
+    p += rd * 0.03;
+    float lp = length(p);
+    vec3 col = sin(vec3(1.05, 2.5, 1.52)*3.94 + r.y) * 0.85 + 0.4;
+    col *= smoothstep(0.0,  0.015, -r.x);
+    col *= smoothstep(0.04, 0.20, abs(lp - 1.1));
+    col *= smoothstep(0.10, 0.34, lp);
+    sum += abs(col) * 5.0 * tint
+         * (1.2 - noise3(vec3(lp*2.0 + j*13.0 + t*5.0)) * 1.1)
+         / (log(distance(p, orig) - 2.0) + 0.75);
+  }
+  return sum;
+}
+
+vec2 iSphere2(vec3 ro, vec3 rd){
+  vec3 oc = ro;
+  float b = dot(oc, rd);
+  float c = dot(oc, oc) - 1.0;
+  float h = b*b - c;
+  if (h < 0.0) return vec2(-1.0);
+  return vec2(-b - sqrt(h), -b + sqrt(h));
+}
+
+void main(){
+  float t = uTime * 0.35;                        // global animation slowdown
+  vec2 p = (gl_FragCoord.xy - uRes.xy*0.5) / uRes.y;
+  vec3 ro = vec3(0.0, 0.0, 5.0);
+  vec3 rd = normalize(vec3(p*0.7, -1.5));
+  // gentle auto-rotation
+  float rotSpeed = 0.12 + uMid*0.10;
+  mat2 mx = rot(t*rotSpeed);
+  mat2 my = rot(t*0.10);
+  ro.xz = mx*ro.xz; rd.xz = mx*rd.xz;
+  ro.xy = my*ro.xy; rd.xy = my*rd.xy;
+  vec3 bro = ro;
+  vec3 brd = rd;
+
+  vec3 col = vec3(0.0125, 0.0, 0.025);
+
+  for (int j = 1; j <= NUM_RAYS; j++){
+    float fj = float(j);
+    ro = bro; rd = brd;
+    mat2 mm = rot((t*0.1 + (fj + 1.0)*5.1) * fj * 0.25);
+    ro.xy = mm*ro.xy; rd.xy = mm*rd.xy;
+    ro.xz = mm*ro.xz; rd.xz = mm*rd.xz;
+    float rz = boltMarch(ro, rd, 2.5, FAR, fj, t);
+    if (rz < FAR){
+      vec3 pos = ro + rz*rd;
+      // each ray driven by a different spectrum bin
+      float specBin = pow(texture2D(uSpec, vec2(fj/float(NUM_RAYS+1), 0.5)).r, 0.7);
+      vec3 contrib = boltVMarch(pos, rd, fj, bro, t, specBin)
+                     * (0.7 + 1.6*specBin + 1.5*uBeat*exp(-uBeatT*2.0));
+      col = max(col, contrib);
+    }
+  }
+
+  // sphere surface reflection (the iconic flowing plasma sheen)
+  ro = bro; rd = brd;
+  vec2 sph = iSphere2(ro, rd);
+  if (sph.x > 0.0){
+    vec3 pos  = ro + rd*sph.x;
+    vec3 pos2 = ro + rd*sph.y;
+    vec3 rf  = reflect(rd, pos);
+    vec3 rf2 = reflect(rd, pos2);
+    float nz  = -log(abs(flow3(rf *1.2,  t) - 0.01));
+    float nz2 = -log(abs(flow3(rf2*1.2, -t) - 0.01));
+    col += (0.10 * nz*nz  * vec3(0.12, 0.12, 0.50)
+         + 0.05 * nz2*nz2 * vec3(0.55, 0.20, 0.55)) * 0.8
+         * (1.0 + uBass*0.6);
+    // beat flash on sphere surface
+    col += vec3(0.5, 0.7, 1.0) * uBeat * 0.6;
+  }
+
+  // overall bass swell
+  col *= 1.3 + uBass*0.4;
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+const EFFECTS = [
+  { name: 'Nebula',       src: FS_NEBULA },
+  { name: 'Star Nest',    src: FS_GALAXY },
+  { name: 'Synthwave',    src: FS_SYNTHWAVE },
+  { name: 'Kali',         src: FS_KALI },
+  { name: 'Plasma Globe', src: FS_PLASMA },
+];
+
+function compile(type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(sh), src);
+    throw new Error('shader compile');
+  }
+  return sh;
+}
+
+const vsShader = compile(gl.VERTEX_SHADER, VS);
+function buildProgram(fsSrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, vsShader);
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(p));
+    throw new Error('link');
+  }
+  return {
+    prog: p,
+    aPos: gl.getAttribLocation(p, 'aPos'),
+    uRes: gl.getUniformLocation(p, 'uRes'),
+    uTime: gl.getUniformLocation(p, 'uTime'),
+    uBass: gl.getUniformLocation(p, 'uBass'),
+    uMid: gl.getUniformLocation(p, 'uMid'),
+    uHi: gl.getUniformLocation(p, 'uHi'),
+    uLevel: gl.getUniformLocation(p, 'uLevel'),
+    uBeat: gl.getUniformLocation(p, 'uBeat'),
+    uBeatT: gl.getUniformLocation(p, 'uBeatT'),
+    uPulse: gl.getUniformLocation(p, 'uPulse'),
+    uSpec: gl.getUniformLocation(p, 'uSpec'),
+  };
+}
+
+const programs = EFFECTS.map(e => buildProgram(e.src));
+let curEffect = 0;
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+
+function useEffect(i) {
+  curEffect = (i + programs.length) % programs.length;
+  const e = programs[curEffect];
+  gl.useProgram(e.prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.enableVertexAttribArray(e.aPos);
+  gl.vertexAttribPointer(e.aPos, 2, gl.FLOAT, false, 0, 0);
+  gl.uniform1i(e.uSpec, 0);
+  document.getElementById('fxName').textContent = EFFECTS[curEffect].name;
+  try { localStorage.setItem('mv.fx', String(curEffect)); } catch {}
+}
+const savedFx = parseInt(localStorage.getItem('mv.fx') || '0', 10);
+useEffect(Number.isFinite(savedFx) ? savedFx : 0);
+
+const specTex = gl.createTexture();
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, specTex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.floor(canvas.clientWidth * dpr);
+  const h = Math.floor(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+    gl.viewport(0, 0, w, h);
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------- Audio ----------
+const audio = new Audio();
+audio.crossOrigin = 'anonymous';
+audio.preload = 'metadata';
+
+let audioCtx = null, analyser = null, sourceNode = null, gainNode = null;
+let freqData = null, specBytes = new Uint8Array(256);
+
+function ensureAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  sourceNode = audioCtx.createMediaElementSource(audio);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  analyser.smoothingTimeConstant = 0.82;
+  gainNode = audioCtx.createGain();
+  gainNode.gain.value = parseInt(volEl.value, 10) / 100;
+  sourceNode.connect(analyser);
+  analyser.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+  freqData = new Uint8Array(analyser.frequencyBinCount);
+}
+
+// ---------- Playlist ----------
+const playlistEl = document.getElementById('tracks');
+const emptyEl = document.getElementById('empty');
+const nowEl = document.getElementById('now');
+const fileInput = document.getElementById('fileInput');
+const dropOverlay = document.getElementById('drop');
+const welcome = document.getElementById('welcome');
+const pickBtn = document.getElementById('pickBtn');
+const playBtn = document.getElementById('play');
+const playIcon = document.getElementById('playIcon');
+const prevBtn = document.getElementById('prev');
+const nextBtn = document.getElementById('next');
+const seekEl = document.getElementById('seek');
+const curEl = document.getElementById('cur');
+const durEl = document.getElementById('dur');
+const volEl = document.getElementById('vol');
+
+const tracks = []; // { id, name, url, dur, blob }
+
+// ---- IndexedDB persistence for the playlist ----
+const idb = (() => {
+  let dbp;
+  function open() {
+    if (dbp) return dbp;
+    dbp = new Promise((res, rej) => {
+      const req = indexedDB.open('mvDB', 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('tracks')) {
+          db.createObjectStore('tracks', { keyPath: 'id', autoIncrement: true });
+        }
+      };
+      req.onsuccess = () => res(req.result);
+      req.onerror   = () => rej(req.error);
+    });
+    return dbp;
+  }
+  const tx = (mode, fn) => open().then(db => new Promise((res, rej) => {
+    const t = db.transaction('tracks', mode);
+    const store = t.objectStore('tracks');
+    let result;
+    Promise.resolve(fn(store)).then(r => { result = r; }, rej);
+    t.oncomplete = () => res(result);
+    t.onerror    = () => rej(t.error);
+    t.onabort    = () => rej(t.error);
+  }));
+  return {
+    add: (rec)        => tx('readwrite', s => new Promise((r, j) => { const q = s.add(rec); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
+    put: (rec)        => tx('readwrite', s => { s.put(rec); }),
+    del: (id)         => tx('readwrite', s => { s.delete(id); }),
+    all: ()           => tx('readonly',  s => new Promise((r, j) => { const q = s.getAll(); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
+  };
+})();
+let current = -1;
+let seeking = false;
+
+function fmtTime(s) {
+  if (!isFinite(s) || s < 0) return '0:00';
+  const m = Math.floor(s / 60);
+  const ss = Math.floor(s % 60).toString().padStart(2, '0');
+  return `${m}:${ss}`;
+}
+
+function renderPlaylist() {
+  playlistEl.innerHTML = '';
+  emptyEl.style.display = tracks.length ? 'none' : 'block';
+  tracks.forEach((t, i) => {
+    const row = document.createElement('div');
+    row.className = 'track' + (i === current ? ' active' : '');
+    row.innerHTML = `
+      <span class="idx">${i + 1}</span>
+      <span class="name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span>
+      <span class="dur">${fmtTime(t.dur)}</span>
+      <button title="Remove">✕</button>
+    `;
+    row.addEventListener('click', (e) => {
+      if (e.target.tagName === 'BUTTON') return;
+      playIndex(i);
+    });
+    row.querySelector('button').addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeTrack(i);
+    });
+    playlistEl.appendChild(row);
+  });
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function addFiles(files) {
+  const added = [];
+  for (const f of files) {
+    const isMp3 = /\.mp3$/i.test(f.name) || f.type === 'audio/mpeg' || f.type === 'audio/mp3';
+    if (!isMp3) continue;
+    const url = URL.createObjectURL(f);
+    const t = { id: null, name: f.name.replace(/\.mp3$/i, ''), url, dur: 0, blob: f };
+    tracks.push(t);
+    added.push(t);
+    // persist to IDB; assign id when known
+    idb.add({ name: t.name, dur: 0, blob: f }).then(id => {
+      t.id = id;
+    }).catch(err => console.warn('persist failed', err));
+    // probe duration
+    const probe = new Audio();
+    probe.preload = 'metadata';
+    probe.src = url;
+    probe.addEventListener('loadedmetadata', () => {
+      t.dur = probe.duration;
+      renderPlaylist();
+      if (t.id != null) idb.put({ id: t.id, name: t.name, dur: t.dur, blob: t.blob }).catch(() => {});
+    });
+  }
+  if (added.length) {
+    welcome.classList.add('hidden');
+    renderPlaylist();
+    if (current === -1) playIndex(tracks.length - added.length);
+  }
+}
+
+function removeTrack(i) {
+  const wasCurrent = i === current;
+  URL.revokeObjectURL(tracks[i].url);
+  if (tracks[i].id != null) idb.del(tracks[i].id).catch(() => {});
+  tracks.splice(i, 1);
+  if (wasCurrent) {
+    audio.pause();
+    if (tracks.length) {
+      current = Math.min(i, tracks.length - 1);
+      playIndex(current);
+    } else {
+      current = -1;
+      nowEl.textContent = '—';
+    }
+  } else if (i < current) {
+    current--;
+  }
+  renderPlaylist();
+}
+
+function playIndex(i) {
+  if (i < 0 || i >= tracks.length) return;
+  const wasDifferent = current !== i;
+  current = i;
+  audio.src = tracks[i].url;
+  nowEl.textContent = tracks[i].name;
+  ensureAudio();
+  audioCtx.resume();
+  audio.play().catch(() => {});
+  if (autoSwitchFx && wasDifferent) {
+    let next = curEffect;
+    if (programs.length > 1) {
+      while (next === curEffect) next = Math.floor(Math.random() * programs.length);
+    }
+    useEffect(next);
+  }
+  renderPlaylist();
+}
+
+function togglePlay() {
+  if (current === -1) {
+    if (tracks.length) playIndex(0);
+    return;
+  }
+  ensureAudio();
+  audioCtx.resume();
+  if (audio.paused) audio.play(); else audio.pause();
+}
+
+playBtn.addEventListener('click', togglePlay);
+prevBtn.addEventListener('click', () => { const n = pickNext(-1); if (n >= 0) playIndex(n); });
+nextBtn.addEventListener('click', () => { const n = pickNext( 1); if (n >= 0) playIndex(n); });
+
+audio.addEventListener('play', () => {
+  playIcon.innerHTML = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
+});
+audio.addEventListener('pause', () => {
+  playIcon.innerHTML = '<path d="M8 5v14l11-7L8 5z"/>';
+});
+audio.addEventListener('ended', () => {
+  const n = pickNext(1);
+  if (n >= 0) playIndex(n);
+});
+audio.addEventListener('loadedmetadata', () => {
+  durEl.textContent = fmtTime(audio.duration);
+  if (current >= 0) {
+    tracks[current].dur = audio.duration;
+    renderPlaylist();
+  }
+});
+audio.addEventListener('timeupdate', () => {
+  if (seeking) return;
+  curEl.textContent = fmtTime(audio.currentTime);
+  if (audio.duration) {
+    seekEl.value = Math.round((audio.currentTime / audio.duration) * 1000);
+  }
+});
+
+seekEl.addEventListener('input', () => { seeking = true; });
+seekEl.addEventListener('change', () => {
+  if (audio.duration) audio.currentTime = (seekEl.value / 1000) * audio.duration;
+  seeking = false;
+});
+
+volEl.addEventListener('input', () => {
+  const v = parseInt(volEl.value, 10) / 100;
+  if (gainNode) gainNode.gain.value = v;
+  audio.volume = v;
+});
+audio.volume = parseInt(volEl.value, 10) / 100;
+
+// Restore persisted playlist from IndexedDB on startup
+idb.all().then(records => {
+  if (!records || !records.length) return;
+  records.sort((a, b) => a.id - b.id);
+  for (const rec of records) {
+    const url = URL.createObjectURL(rec.blob);
+    tracks.push({ id: rec.id, name: rec.name, url, dur: rec.dur || 0, blob: rec.blob });
+  }
+  welcome.classList.add('hidden');
+  renderPlaylist();
+}).catch(err => console.warn('playlist restore failed', err));
+
+// ---------- File input + drag/drop ----------
+pickBtn.addEventListener('click', () => fileInput.click());
+document.getElementById('hint').addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', (e) => {
+  addFiles(e.target.files);
+  fileInput.value = '';
+});
+
+let dragDepth = 0;
+window.addEventListener('dragenter', (e) => {
+  if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+  e.preventDefault();
+  dragDepth++;
+  dropOverlay.classList.add('show');
+});
+window.addEventListener('dragover', (e) => {
+  if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }
+});
+window.addEventListener('dragleave', (e) => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dropOverlay.classList.remove('show');
+});
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  dropOverlay.classList.remove('show');
+  if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files);
+});
+
+// Toggles: shuffle, loop playlist, auto-switch effect
+let shufflePlay   = localStorage.getItem('mv.shuf') === '1';
+let loopPlaylist  = localStorage.getItem('mv.loop') === '1';
+let autoSwitchFx  = localStorage.getItem('mv.autofx')=== '1';
+const shufBtn = document.getElementById('shuffle');
+const loopBtn = document.getElementById('loop');
+const autoBtn = document.getElementById('auto');
+function syncToggle(btn, on){ btn.classList.toggle('on', on); }
+syncToggle(shufBtn, shufflePlay);
+syncToggle(loopBtn, loopPlaylist);
+syncToggle(autoBtn, autoSwitchFx);
+shufBtn.addEventListener('click', () => {
+  shufflePlay = !shufflePlay;
+  localStorage.setItem('mv.shuf', shufflePlay ? '1' : '0');
+  syncToggle(shufBtn, shufflePlay);
+});
+loopBtn.addEventListener('click', () => {
+  loopPlaylist = !loopPlaylist;
+  localStorage.setItem('mv.loop', loopPlaylist ? '1' : '0');
+  syncToggle(loopBtn, loopPlaylist);
+});
+autoBtn.addEventListener('click', () => {
+  autoSwitchFx = !autoSwitchFx;
+  localStorage.setItem('mv.autofx', autoSwitchFx ? '1' : '0');
+  syncToggle(autoBtn, autoSwitchFx);
+});
+
+function pickNext(dir) {
+  if (!tracks.length) return -1;
+  if (shufflePlay && tracks.length > 1) {
+    let n = current;
+    while (n === current) n = Math.floor(Math.random() * tracks.length);
+    return n;
+  }
+  const n = current + dir;
+  if (n >= tracks.length) return loopPlaylist ? 0 : -1;
+  if (n < 0) return loopPlaylist ? tracks.length - 1 : -1;
+  return n;
+}
+
+// Mouse idle: hide UI after inactivity
+let idleTimer = null;
+function poke() {
+  document.body.classList.remove('idle');
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => document.body.classList.add('idle'), 2500);
+}
+['mousemove', 'mousedown', 'keydown', 'touchstart', 'wheel'].forEach(ev =>
+  window.addEventListener(ev, poke, { passive: true })
+);
+poke();
+
+// Effect switcher
+document.getElementById('fx').addEventListener('click', () => useEffect(curEffect + 1));
+
+// Fullscreen
+const fsBtn = document.getElementById('fs');
+const fsIcon = document.getElementById('fsIcon');
+function toggleFullscreen() {
+  const d = document;
+  const el = d.documentElement;
+  const isFs = d.fullscreenElement || d.webkitFullscreenElement;
+  if (!isFs) {
+    (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+  } else {
+    (d.exitFullscreen || d.webkitExitFullscreen).call(d);
+  }
+}
+fsBtn.addEventListener('click', toggleFullscreen);
+function syncFsIcon() {
+  const isFs = document.fullscreenElement || document.webkitFullscreenElement;
+  fsIcon.innerHTML = isFs
+    ? '<path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>'
+    : '<path d="M5 5h6V3H3v8h2V5zm14 0v6h2V3h-8v2h6zM5 19v-6H3v8h8v-2H5zm14-6v6h-6v2h8v-8h-2z"/>';
+}
+document.addEventListener('fullscreenchange', syncFsIcon);
+document.addEventListener('webkitfullscreenchange', syncFsIcon);
+
+// Keyboard
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (e.code === 'KeyF') { e.preventDefault(); toggleFullscreen(); }
+  else if (e.code === 'KeyE') { e.preventDefault(); useEffect(curEffect + (e.shiftKey ? -1 : 1)); }
+  else if (e.code === 'ArrowRight' && e.shiftKey) nextBtn.click();
+  else if (e.code === 'ArrowLeft' && e.shiftKey) prevBtn.click();
+  else if (e.code === 'ArrowRight') audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 5);
+  else if (e.code === 'ArrowLeft') audio.currentTime = Math.max(0, audio.currentTime - 5);
+});
+
+// ---------- Render Loop ----------
+let smoothBass = 0, smoothMid = 0, smoothHi = 0, smoothLevel = 0;
+let prevBass = 0, fastBass = 0, beatEnv = 0, beatT = 999, pulseClock = 0, pulseVel = 0, lastFrameT = performance.now();
+const start = performance.now();
+
+function downsampleSpec(src, dst) {
+  // src: analyser frequencyBinCount values, dst: 256
+  const ratio = src.length / dst.length;
+  for (let i = 0; i < dst.length; i++) {
+    const s0 = Math.floor(i * ratio);
+    const s1 = Math.floor((i + 1) * ratio);
+    let m = 0;
+    for (let j = s0; j < s1; j++) if (src[j] > m) m = src[j];
+    dst[i] = m;
+  }
+}
+
+function frame() {
+  resize();
+  let bass = 0, mid = 0, hi = 0, level = 0;
+  if (analyser) {
+    analyser.getByteFrequencyData(freqData);
+    const N = freqData.length;
+    const bEnd = Math.floor(N * 0.08);
+    const mEnd = Math.floor(N * 0.35);
+    let bs = 0, ms = 0, hs = 0;
+    for (let i = 0; i < bEnd; i++) bs += freqData[i];
+    for (let i = bEnd; i < mEnd; i++) ms += freqData[i];
+    for (let i = mEnd; i < N; i++) hs += freqData[i];
+    bass = (bs / (bEnd * 255)) || 0;
+    mid = (ms / ((mEnd - bEnd) * 255)) || 0;
+    hi = (hs / ((N - mEnd) * 255)) || 0;
+    level = (bass + mid + hi) / 3;
+    downsampleSpec(freqData, specBytes);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, specTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, 256, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, specBytes);
+  } else {
+    // idle texture
+    for (let i = 0; i < 256; i++) specBytes[i] = 0;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, specTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, 256, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, specBytes);
+  }
+
+  const k = 0.18;
+  smoothBass += (bass - smoothBass) * k;
+  smoothMid += (mid - smoothMid) * k;
+  smoothHi += (hi - smoothHi) * k;
+  smoothLevel += (level - smoothLevel) * 0.10;
+
+  // beat / transient detection — use a fast follower so transients aren't smeared
+  const nowT = performance.now();
+  const dt = Math.min(0.1, (nowT - lastFrameT) / 1000);
+  lastFrameT = nowT;
+  fastBass += (bass - fastBass) * 0.55;
+  const transient = Math.max(0, fastBass - prevBass);
+  prevBass = fastBass;
+  beatEnv = Math.max(beatEnv * Math.pow(0.0008, dt), 0);
+  beatT += dt;
+  // also accept beats when level itself jumps (handles compressed / sustained bass tracks)
+  const energyBeat = transient > 0.025 && fastBass > 0.16;
+  if (energyBeat && beatT > 0.13) {
+    const strength = Math.min(1.0, transient * 18);
+    beatEnv = Math.max(beatEnv, strength);
+    pulseVel += strength * 6.0;       // kick velocity on beat
+    beatT = 0;
+  }
+  // smooth velocity-driven pulse: motion ramps and tails over ~150ms
+  pulseVel *= Math.pow(0.0005, dt);    // fast velocity decay
+  pulseClock += pulseVel * dt;
+
+  const t = (performance.now() - start) / 1000;
+  const e = programs[curEffect];
+  gl.uniform2f(e.uRes, canvas.width, canvas.height);
+  gl.uniform1f(e.uTime, t);
+  gl.uniform1f(e.uBass, smoothBass);
+  gl.uniform1f(e.uMid, smoothMid);
+  gl.uniform1f(e.uHi, smoothHi);
+  gl.uniform1f(e.uLevel, smoothLevel);
+  gl.uniform1f(e.uBeat, beatEnv);
+  gl.uniform1f(e.uBeatT, beatT);
+  gl.uniform1f(e.uPulse, pulseClock);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
