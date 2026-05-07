@@ -1143,7 +1143,9 @@ const Photos = {
     }
   },
 };
-Photos.restore();
+// Deferred so that `idb` (declared later in the script body) is in scope by
+// the time restore() awaits it. Without this we hit a TDZ ReferenceError.
+queueMicrotask(() => Photos.restore());
 
 const specTex = gl.createTexture();
 gl.activeTexture(gl.TEXTURE0);
@@ -1346,6 +1348,7 @@ const idb = (() => {
     add: (rec)  => tx('readwrite', s => new Promise((r, j) => { const q = s.add(rec); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
     put: (rec)  => tx('readwrite', s => { s.put(rec); }),
     del: (id)   => tx('readwrite', s => { s.delete(id); }),
+    get: (id)   => tx('readonly',  s => new Promise((r, j) => { const q = s.get(id); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
     all: ()     => tx('readonly',  s => new Promise((r, j) => { const q = s.getAll(); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
     addImg: (rec) => txOn('images', 'readwrite', s => new Promise((r, j) => { const q = s.add(rec); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
     delImg: (id)  => txOn('images', 'readwrite', s => { s.delete(id); }),
@@ -1462,8 +1465,22 @@ async function playIndex(i) {
     useEffect(next);
   }
   renderPlaylist();
+  // re-fetch a fresh blob from IDB before decoding. Safari's IDB-backed Blob
+  // references can go stale across page loads (WebKitBlobResource error 1 →
+  // decodeAudioData NotFoundError); a fresh read from the store always works.
+  let blob = t.blob;
+  if (t.id != null) {
+    try {
+      const fresh = await idb.get(t.id);
+      if (fresh && fresh.blob) {
+        blob = fresh.blob;
+        t.blob = fresh.blob;
+      }
+    } catch (e) { /* fall back to in-memory blob */ }
+  }
+  if (current !== i) return;
   // decode + play asynchronously (the only reliable way for VBR MP3 blobs)
-  const dur = await Player.loadBlob(t.blob);
+  const dur = await Player.loadBlob(blob);
   if (current !== i) return; // user switched while decoding
   if (dur != null && dur > 0 && (!t.dur || Math.abs(t.dur - dur) > 0.5)) {
     t.dur = dur;
