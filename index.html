@@ -99,6 +99,8 @@
     font-size: 14px; padding: 2px 4px; border-radius: 6px;
   }
   .track button:hover { color: #fff; background: rgba(255,255,255,0.08); }
+  .track button.like.on { color: #ff5cc8; }
+  .track button.like.on:hover { color: #ff8cdc; }
 
   .empty {
     color: var(--muted); text-align: center; padding: 16px 12px; font-size: 13px;
@@ -988,13 +990,18 @@ function renderPlaylist() {
       <span class="idx">${i + 1}</span>
       <span class="name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span>
       <span class="dur">${fmtTime(t.dur)}</span>
-      <button title="Remove">✕</button>
+      <button class="like ${t.liked ? 'on' : ''}" title="${t.liked ? 'Unlike' : 'Like'}">${t.liked ? '♥' : '♡'}</button>
+      <button class="rm" title="Remove">✕</button>
     `;
     row.addEventListener('click', (e) => {
       if (e.target.tagName === 'BUTTON') return;
       playIndex(i);
     });
-    row.querySelector('button').addEventListener('click', (e) => {
+    row.querySelector('button.like').addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleLike(i);
+    });
+    row.querySelector('button.rm').addEventListener('click', (e) => {
       e.stopPropagation();
       removeTrack(i);
     });
@@ -1012,11 +1019,11 @@ function addFiles(files) {
     const isMp3 = /\.mp3$/i.test(f.name) || f.type === 'audio/mpeg' || f.type === 'audio/mp3';
     if (!isMp3) continue;
     const url = URL.createObjectURL(f);
-    const t = { id: null, name: f.name.replace(/\.mp3$/i, ''), url, dur: 0, blob: f };
+    const t = { id: null, name: f.name.replace(/\.mp3$/i, ''), url, dur: 0, blob: f, liked: false };
     tracks.push(t);
     added.push(t);
     // persist to IDB; assign id when known
-    idb.add({ name: t.name, dur: 0, blob: f }).then(id => {
+    idb.add({ name: t.name, dur: 0, blob: f, liked: false }).then(id => {
       t.id = id;
     }).catch(err => console.warn('persist failed', err));
     // probe duration
@@ -1026,7 +1033,7 @@ function addFiles(files) {
     probe.addEventListener('loadedmetadata', () => {
       t.dur = probe.duration;
       renderPlaylist();
-      if (t.id != null) idb.put({ id: t.id, name: t.name, dur: t.dur, blob: t.blob }).catch(() => {});
+      if (t.id != null) idb.put({ id: t.id, name: t.name, dur: t.dur, blob: t.blob, liked: t.liked }).catch(() => {});
     });
   }
   if (added.length) {
@@ -1034,6 +1041,15 @@ function addFiles(files) {
     renderPlaylist();
     if (current === -1) playIndex(tracks.length - added.length);
   }
+}
+
+function toggleLike(i) {
+  const t = tracks[i];
+  t.liked = !t.liked;
+  if (t.id != null) {
+    idb.put({ id: t.id, name: t.name, dur: t.dur, blob: t.blob, liked: t.liked }).catch(() => {});
+  }
+  renderPlaylist();
 }
 
 function removeTrack(i) {
@@ -1133,7 +1149,7 @@ idb.all().then(records => {
   records.sort((a, b) => a.id - b.id);
   for (const rec of records) {
     const url = URL.createObjectURL(rec.blob);
-    tracks.push({ id: rec.id, name: rec.name, url, dur: rec.dur || 0, blob: rec.blob });
+    tracks.push({ id: rec.id, name: rec.name, url, dur: rec.dur || 0, blob: rec.blob, liked: !!rec.liked });
   }
   welcome.classList.add('hidden');
   renderPlaylist();
