@@ -1385,9 +1385,9 @@ function renderPlaylist() {
     row.className = 'track' + (i === current ? ' active' : '');
     row.innerHTML = `
       <span class="idx">${i + 1}</span>
+      <button class="like ${t.liked ? 'on' : ''}" title="${t.liked ? 'Unlike' : 'Like'}">${t.liked ? '♥' : '♡'}</button>
       <span class="name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span>
       <span class="dur">${fmtTime(t.dur)}</span>
-      <button class="like ${t.liked ? 'on' : ''}" title="${t.liked ? 'Unlike' : 'Like'}">${t.liked ? '♥' : '♡'}</button>
       <button class="rm" title="Remove">✕</button>
     `;
     row.addEventListener('click', (e) => {
