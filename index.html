@@ -896,7 +896,8 @@ resize();
 
 // ---------- Audio ----------
 const audio = new Audio();
-audio.crossOrigin = 'anonymous';
+// blob: URLs are same-origin — no CORS needed; setting crossOrigin can break
+// playback in some browsers when src is a blob:.
 audio.preload = 'metadata';
 
 let audioCtx = null, analyser = null, sourceNode = null, gainNode = null;
@@ -1026,15 +1027,6 @@ function addFiles(files) {
     idb.add({ name: t.name, dur: 0, blob: f, liked: false }).then(id => {
       t.id = id;
     }).catch(err => console.warn('persist failed', err));
-    // probe duration
-    const probe = new Audio();
-    probe.preload = 'metadata';
-    probe.src = url;
-    probe.addEventListener('loadedmetadata', () => {
-      t.dur = probe.duration;
-      renderPlaylist();
-      if (t.id != null) idb.put({ id: t.id, name: t.name, dur: t.dur, blob: t.blob, liked: t.liked }).catch(() => {});
-    });
   }
   if (added.length) {
     welcome.classList.add('hidden');
@@ -1112,16 +1104,27 @@ audio.addEventListener('pause', () => {
   playIcon.innerHTML = '<path d="M8 5v14l11-7L8 5z"/>';
 });
 audio.addEventListener('ended', () => {
+  // guard against spurious 'ended' before duration is known (some browsers
+  // briefly report duration=0/NaN/Infinity for blob: sources)
+  const d = audio.duration;
+  if (!isFinite(d) || d <= 0) return;
+  if (audio.currentTime < d - 0.5) return;
   const n = pickNext(1);
   if (n >= 0) playIndex(n);
 });
 audio.addEventListener('loadedmetadata', () => {
-  durEl.textContent = fmtTime(audio.duration);
-  if (current >= 0) {
-    tracks[current].dur = audio.duration;
+  const d = audio.duration;
+  durEl.textContent = fmtTime(d);
+  if (current >= 0 && isFinite(d) && d > 0) {
+    const t = tracks[current];
+    t.dur = d;
     renderPlaylist();
+    if (t.id != null) {
+      idb.put({ id: t.id, name: t.name, dur: t.dur, blob: t.blob, liked: t.liked }).catch(() => {});
+    }
   }
 });
+audio.addEventListener('error', (e) => console.warn('audio error', audio.error));
 audio.addEventListener('timeupdate', () => {
   if (seeking) return;
   curEl.textContent = fmtTime(audio.currentTime);
