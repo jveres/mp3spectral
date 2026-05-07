@@ -898,7 +898,14 @@ resize();
 const audio = new Audio();
 // blob: URLs are same-origin — no CORS needed; setting crossOrigin can break
 // playback in some browsers when src is a blob:.
-audio.preload = 'metadata';
+// preload='auto' so the browser fully fetches the file and reports accurate
+// duration; some VBR MP3s otherwise show duration=Infinity until full decode.
+audio.preload = 'auto';
+
+// per-track playback bookkeeping used to gate auto-advance (some browsers
+// mis-report duration for blob: VBR MP3s, causing 'ended' to fire early)
+let maxObservedTime = 0;
+let trackLoadedAt = 0;
 
 let audioCtx = null, analyser = null, sourceNode = null, gainNode = null;
 let freqData = null, specBytes = new Uint8Array(256);
@@ -1068,11 +1075,18 @@ function playIndex(i) {
   if (i < 0 || i >= tracks.length) return;
   const wasDifferent = current !== i;
   current = i;
+  // pause first so pending play() promises don't reject with AbortError when
+  // we change src out from under them
+  try { audio.pause(); } catch {}
+  maxObservedTime = 0;
+  trackLoadedAt = performance.now();
   audio.src = tracks[i].url;
   nowEl.textContent = tracks[i].name;
   ensureAudio();
   audioCtx.resume();
-  audio.play().catch(() => {});
+  audio.play().catch(err => {
+    if (err && err.name !== 'AbortError') console.warn('audio.play()', err);
+  });
   if (autoSwitchFx && wasDifferent) {
     let next = curEffect;
     if (programs.length > 1) {
@@ -1104,11 +1118,21 @@ audio.addEventListener('pause', () => {
   playIcon.innerHTML = '<path d="M8 5v14l11-7L8 5z"/>';
 });
 audio.addEventListener('ended', () => {
-  // only auto-advance on a real end-of-track. audio.ended is true only when
-  // playback reached the duration; it stays false for stalls / src changes.
+  // only auto-advance on a genuine end-of-track. browsers occasionally fire
+  // 'ended' early for blob: MP3s with bad/missing VBR headers (duration is
+  // mis-reported as a few seconds, audio "ends" at that point).
   if (!audio.ended) return;
   const d = audio.duration;
   if (!isFinite(d) || d <= 0) return;
+  // refuse to advance if reported duration is implausibly short, OR if the
+  // wall-clock playback has been less than 15s — protects against the
+  // wrong-duration case while still allowing real short tracks to auto-advance
+  // when the user manually plays them.
+  const wallClock = (performance.now() - trackLoadedAt) / 1000;
+  if (d < 5) return;
+  if (wallClock < 15) return;
+  // also require we observed playback near the end at least once
+  if (maxObservedTime < d - 1.0 && maxObservedTime < 30) return;
   const n = pickNext(1);
   if (n >= 0) playIndex(n);
 });
@@ -1128,6 +1152,7 @@ audio.addEventListener('loadedmetadata', () => {
 });
 audio.addEventListener('error', (e) => console.warn('audio error', audio.error));
 audio.addEventListener('timeupdate', () => {
+  if (audio.currentTime > maxObservedTime) maxObservedTime = audio.currentTime;
   if (seeking) return;
   curEl.textContent = fmtTime(audio.currentTime);
   if (audio.duration) {
