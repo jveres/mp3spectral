@@ -1019,10 +1019,8 @@ const Photos = {
         image: img, tex,
         aspect: img.naturalWidth / Math.max(1, img.naturalHeight),
       });
-      if (this.curIdx < 0) {
-        this.curIdx = 0;
-        this.slideStart = performance.now() / 1000;
-      }
+      // tick() initializes curIdx/slideStart on first call so all timestamps
+      // share the render loop's time base (avoids a one-frame Ken-Burns jump)
     } catch (e) { console.warn('image load failed', rec && rec.name, e); }
   },
 
