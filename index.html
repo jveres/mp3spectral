@@ -904,7 +904,7 @@ void main(){
     float r = length(uv - 0.5);
     float ripple = sin(r*30.0 - uMix*30.0) * exp(-r*4.0) * (1.0 - uMix);
     vec2 d = (uv - 0.5)*(1.0 + ripple*0.06) + 0.5;
-    vec3 a = sA(d + pn);
+    vec3 a = sA(d);
     col = mix(a, colB, smoothstep(0.2, 0.95, uMix));
   }
 
