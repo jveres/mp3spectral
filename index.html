@@ -839,8 +839,8 @@ uniform float uSlideDur;
 
 // map screen uv [0,1] to image uv with cover-fit + Y flip + optional pan in
 // pre-flip texture-space. (Textures are uploaded without UNPACK_FLIP_Y_WEBGL
-// so we flip Y in the shader.) `pan` is added BEFORE the flip and must satisfy
-// |pan| <= (1 - sc) / 2 to stay within the image.
+// so we flip Y in the shader.) The pan vector is added BEFORE the flip and
+// must satisfy |pan| <= (1 - sc) / 2 to stay within the image.
 vec2 cover(vec2 uv, float imgAspect, vec2 pan) {
   float scrA = uRes.x / uRes.y;
   vec2 sc = vec2(1.0);
