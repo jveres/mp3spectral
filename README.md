@@ -73,8 +73,13 @@ each kick).
   IndexedDB.
 - Picking a new directory replaces the previous set. Shift-click the button to
   clear all loaded photos.
-- Slides display at constant cover-fit (no intra-slide scale changes); each
-  one shows for ~6s, then a 1.6s transition picks one of six styles at random:
+- Each slide is shown for ~8s with a smooth **Ken Burns auto-pan**: the cover
+  window drifts (eased) along a randomized direction, revealing portions that
+  were initially cropped off. Movement is bounded by the cover budget so the
+  edges of the image never appear — wide images pan horizontally, tall ones
+  vertically, and screen-aspect images barely move. Each slide gets a fresh
+  pan direction.
+- Slide change is a 1.6s transition picking one of six styles at random:
   crossfade, diagonal wipe, chunky pixel dissolve, radial sweep, dual zoom,
   ripple distortion. Beats add a subtle brightness flash.
 - Header HUD shows the current image's relative path while Photos is active;
@@ -108,10 +113,13 @@ Everything is in `index.html` — vanilla JS modules, no build, no deps.
   beat) and `uPulse` — a velocity-based clock that surges on beats, used by
   effects that want motion locked to the beat rather than wall-clock time.
 - For the Photos effect the shader has additional uniforms `uTexA / uTexB`
-  (current and next slide) plus `uMix / uTransType / uAspectA / uAspectB`.
-  The render loop binds image textures to `TEXTURE1 / TEXTURE2` and restores
-  `TEXTURE0` for the spectrum sampler so the other shaders keep working
-  unchanged.
+  (current and next slide), `uMix / uTransType / uAspectA / uAspectB`, plus
+  `uPhotoT / uSlideDur / uKenSeed` driving the auto-pan. The render loop
+  binds image textures to `TEXTURE1 / TEXTURE2` and restores `TEXTURE0` for
+  the spectrum sampler so the other shaders keep working unchanged.
+- Track Blobs are re-fetched from IndexedDB at play time before
+  `decodeAudioData`, because Safari/WebKit invalidates IDB-backed `Blob`
+  references across page loads.
 
 ## Credits
 
