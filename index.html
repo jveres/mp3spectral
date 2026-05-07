@@ -1104,11 +1104,11 @@ audio.addEventListener('pause', () => {
   playIcon.innerHTML = '<path d="M8 5v14l11-7L8 5z"/>';
 });
 audio.addEventListener('ended', () => {
-  // guard against spurious 'ended' before duration is known (some browsers
-  // briefly report duration=0/NaN/Infinity for blob: sources)
+  // only auto-advance on a real end-of-track. audio.ended is true only when
+  // playback reached the duration; it stays false for stalls / src changes.
+  if (!audio.ended) return;
   const d = audio.duration;
   if (!isFinite(d) || d <= 0) return;
-  if (audio.currentTime < d - 0.5) return;
   const n = pickNext(1);
   if (n >= 0) playIndex(n);
 });
@@ -1117,9 +1117,11 @@ audio.addEventListener('loadedmetadata', () => {
   durEl.textContent = fmtTime(d);
   if (current >= 0 && isFinite(d) && d > 0) {
     const t = tracks[current];
+    const wasUnknown = !t.dur;
     t.dur = d;
     renderPlaylist();
-    if (t.id != null) {
+    // persist duration once, when first known — avoid rewriting the blob each play
+    if (wasUnknown && t.id != null) {
       idb.put({ id: t.id, name: t.name, dur: t.dur, blob: t.blob, liked: t.liked }).catch(() => {});
     }
   }
@@ -1135,7 +1137,11 @@ audio.addEventListener('timeupdate', () => {
 
 seekEl.addEventListener('input', () => { seeking = true; });
 seekEl.addEventListener('change', () => {
-  if (audio.duration) audio.currentTime = (seekEl.value / 1000) * audio.duration;
+  const d = audio.duration;
+  if (isFinite(d) && d > 0) {
+    // clamp away from the very end so we don't race the 'ended' event
+    audio.currentTime = Math.max(0, Math.min(d - 0.05, (seekEl.value / 1000) * d));
+  }
   seeking = false;
 });
 
@@ -1276,7 +1282,10 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyE') { e.preventDefault(); useEffect(curEffect + (e.shiftKey ? -1 : 1)); }
   else if (e.code === 'ArrowRight' && e.shiftKey) nextBtn.click();
   else if (e.code === 'ArrowLeft' && e.shiftKey) prevBtn.click();
-  else if (e.code === 'ArrowRight') audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 5);
+  else if (e.code === 'ArrowRight') {
+    const d = audio.duration;
+    if (isFinite(d) && d > 0) audio.currentTime = Math.min(d - 0.05, audio.currentTime + 5);
+  }
   else if (e.code === 'ArrowLeft') audio.currentTime = Math.max(0, audio.currentTime - 5);
 });
 
