@@ -246,6 +246,7 @@
         <button class="btn toggle" id="shuffle" title="Shuffle / random play" style="width:auto; padding:0 12px; border-radius:18px; font-size:12px;">Shuffle</button>
         <button class="btn toggle" id="loop" title="Loop playlist" style="width:auto; padding:0 12px; border-radius:18px; font-size:12px;">Loop</button>
         <button class="btn toggle" id="auto" title="Auto-switch effect each track" style="width:auto; padding:0 12px; border-radius:18px; font-size:12px;">Auto FX</button>
+        <button class="btn" id="photos" title="Load images for the Photos effect" style="width:auto; padding:0 12px; border-radius:18px; font-size:12px;">Photos…</button>
         <button class="btn" id="fx" title="Next effect (E)" style="width:auto; padding:0 14px; border-radius:18px; font-size:12px; letter-spacing:0.4px;">
           <span id="fxName">Nebula</span>
         </button>
@@ -295,6 +296,7 @@
   </div>
 
   <input type="file" id="fileInput" accept="audio/mpeg,audio/mp3,.mp3" multiple style="display:none" />
+  <input type="file" id="imgInput" accept="image/*" multiple webkitdirectory style="display:none" />
 
   <div class="drop-overlay" id="drop">
     <div class="drop-card">Drop MP3s to add to playlist</div>
@@ -808,12 +810,105 @@ void main(){
 }
 `;
 
+// ---- Photos: image slideshow with animated transitions and Ken Burns ----
+const FS_PHOTOS = FS_COMMON + `
+uniform sampler2D uTexA;
+uniform sampler2D uTexB;
+uniform float uMix;
+uniform float uHasB;
+uniform float uAspectA;
+uniform float uAspectB;
+uniform float uPhotoT;
+uniform float uTransType;
+
+// map screen uv [0,1] to image uv with cover-fit + flip (textures uploaded
+// without UNPACK_FLIP_Y, so we flip Y here)
+vec2 cover(vec2 uv, float imgAspect) {
+  float scrA = uRes.x / uRes.y;
+  vec2 sc = vec2(1.0);
+  if (imgAspect > scrA) sc.x = scrA / imgAspect;
+  else                  sc.y = imgAspect / scrA;
+  vec2 q = (uv - 0.5) * sc + 0.5;
+  q.y = 1.0 - q.y;
+  return q;
+}
+
+vec3 sA(vec2 uv){ return texture2D(uTexA, cover(uv, uAspectA)).rgb; }
+vec3 sB(vec2 uv){ return texture2D(uTexB, cover(uv, uAspectB)).rgb; }
+
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes.xy;
+  // gentle Ken Burns: slow zoom in + drift on the current slide
+  float k  = 1.0 + uPhotoT*0.012 + uBass*0.025;
+  vec2  pn = vec2(sin(uPhotoT*0.07)*0.025, cos(uPhotoT*0.05)*0.020);
+  vec2 uvA = (uv - 0.5)/k + 0.5 + pn;
+
+  if (uHasB < 0.5) {
+    vec3 col = sA(uvA);
+    col *= 1.0 + uBeat*0.18;
+    float r = length(uv - 0.5);
+    col *= 1.0 - r*r*0.25;
+    gl_FragColor = vec4(col, 1.0);
+    return;
+  }
+
+  vec3 colA = sA(uvA);
+  vec3 colB = sB(uv);
+  vec3 col;
+  float tt = floor(uTransType + 0.5);
+  float m  = smoothstep(0.0, 1.0, uMix);
+
+  if (tt < 0.5) {
+    // 0: crossfade
+    col = mix(colA, colB, m);
+  } else if (tt < 1.5) {
+    // 1: diagonal wipe with feather
+    float diag = (uv.x + uv.y) * 0.5;
+    float edge = uMix * 1.30 - 0.15;
+    float w = smoothstep(edge, edge + 0.10, diag);
+    col = mix(colB, colA, w);
+  } else if (tt < 2.5) {
+    // 2: pixel dissolve (chunky cells)
+    vec2 cell = floor(gl_FragCoord.xy / 14.0);
+    float th = hash(cell);
+    col = (uMix > th) ? colB : colA;
+  } else if (tt < 3.5) {
+    // 3: radial wipe rotating around center
+    vec2 v = uv - 0.5;
+    float a = atan(v.y, v.x);
+    float ang = (a + PI) / (2.0*PI);
+    float w = smoothstep(uMix - 0.04, uMix + 0.04, ang);
+    col = mix(colB, colA, w);
+  } else if (tt < 4.5) {
+    // 4: zoom-out A + zoom-in B
+    float zA = 1.0 + m*0.50;
+    float zB = 1.50 - m*0.50;
+    vec3 a = sA((uvA - 0.5)/zA + 0.5);
+    vec3 b = sB((uv  - 0.5)/zB + 0.5);
+    col = mix(a, b, m);
+  } else {
+    // 5: ripple distortion fade
+    float r = length(uv - 0.5);
+    float ripple = sin(r*30.0 - uMix*30.0) * exp(-r*4.0) * (1.0 - uMix);
+    vec2 d = (uv - 0.5)*(1.0 + ripple*0.06) + 0.5;
+    vec3 a = sA(d + pn);
+    col = mix(a, colB, smoothstep(0.2, 0.95, uMix));
+  }
+
+  col *= 1.0 + uBeat*0.18;
+  float r2 = length(uv - 0.5);
+  col *= 1.0 - r2*r2*0.25;
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
 const EFFECTS = [
   { name: 'Nebula',       src: FS_NEBULA },
   { name: 'Star Nest',    src: FS_GALAXY },
   { name: 'Synthwave',    src: FS_SYNTHWAVE },
   { name: 'Kali',         src: FS_KALI },
   { name: 'Plasma Globe', src: FS_PLASMA },
+  { name: 'Photos',       src: FS_PHOTOS },
 ];
 
 function compile(type, src) {
@@ -850,6 +945,14 @@ function buildProgram(fsSrc) {
     uBeatT: gl.getUniformLocation(p, 'uBeatT'),
     uPulse: gl.getUniformLocation(p, 'uPulse'),
     uSpec: gl.getUniformLocation(p, 'uSpec'),
+    uTexA: gl.getUniformLocation(p, 'uTexA'),
+    uTexB: gl.getUniformLocation(p, 'uTexB'),
+    uMix: gl.getUniformLocation(p, 'uMix'),
+    uHasB: gl.getUniformLocation(p, 'uHasB'),
+    uAspectA: gl.getUniformLocation(p, 'uAspectA'),
+    uAspectB: gl.getUniformLocation(p, 'uAspectB'),
+    uPhotoT: gl.getUniformLocation(p, 'uPhotoT'),
+    uTransType: gl.getUniformLocation(p, 'uTransType'),
   };
 }
 
@@ -873,6 +976,118 @@ function useEffect(i) {
 }
 const savedFx = parseInt(localStorage.getItem('mv.fx') || '0', 10);
 useEffect(Number.isFinite(savedFx) ? savedFx : 0);
+
+// ---------- Photos slideshow state ----------
+const Photos = {
+  list: [],         // { id, name, blob, image, tex, aspect }
+  curIdx: -1,
+  nextIdx: -1,
+  mix: 0,
+  phase: 'idle',    // 'idle' | 'fading'
+  phaseT0: 0,
+  slideStart: 0,
+  transType: 0,
+  SLIDE_DUR: 6.0,   // seconds per slide before transitioning
+  TRANS_DUR: 1.6,   // seconds for the transition itself
+
+  makeImage(blob) {
+    return new Promise((res, rej) => {
+      const img = new Image();
+      img.onload  = () => res(img);
+      img.onerror = rej;
+      img.src = URL.createObjectURL(blob);
+    });
+  },
+
+  makeTex(img) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return tex;
+  },
+
+  async addOne(rec) {
+    try {
+      const img = await this.makeImage(rec.blob);
+      const tex = this.makeTex(img);
+      this.list.push({
+        id: rec.id, name: rec.name, blob: rec.blob,
+        image: img, tex,
+        aspect: img.naturalWidth / Math.max(1, img.naturalHeight),
+      });
+      if (this.curIdx < 0) {
+        this.curIdx = 0;
+        this.slideStart = performance.now() / 1000;
+      }
+    } catch (e) { console.warn('image load failed', rec && rec.name, e); }
+  },
+
+  async loadFiles(files) {
+    const ok = /\.(jpe?g|png|webp|gif|bmp|avif)$/i;
+    let added = 0;
+    for (const f of files) {
+      if (!ok.test(f.name) && !(f.type || '').startsWith('image/')) continue;
+      let id = null;
+      try { id = await idb.addImg({ name: f.name, blob: f }); } catch (e) { console.warn('img persist', e); }
+      await this.addOne({ id, name: f.name, blob: f });
+      added++;
+    }
+    return added;
+  },
+
+  async restore() {
+    try {
+      const recs = await idb.allImg();
+      if (!recs || !recs.length) return;
+      recs.sort((a, b) => a.id - b.id);
+      for (const rec of recs) await this.addOne(rec);
+    } catch (e) { console.warn('photos restore', e); }
+  },
+
+  async clear() {
+    for (const p of this.list) try { gl.deleteTexture(p.tex); } catch {}
+    this.list = [];
+    this.curIdx = -1;
+    this.nextIdx = -1;
+    this.phase = 'idle';
+    this.mix = 0;
+    try { await idb.clearImg(); } catch {}
+  },
+
+  tick(t) {
+    if (this.list.length === 0) return;
+    if (this.curIdx < 0) {
+      this.curIdx = 0;
+      this.slideStart = t;
+    }
+    if (this.phase === 'idle') {
+      if (this.list.length > 1 && (t - this.slideStart) > this.SLIDE_DUR) {
+        this.nextIdx = (this.curIdx + 1) % this.list.length;
+        this.transType = Math.floor(Math.random() * 6);
+        this.phase = 'fading';
+        this.phaseT0 = t;
+        this.mix = 0;
+      } else {
+        this.mix = 0;
+      }
+    } else {
+      const dt = t - this.phaseT0;
+      this.mix = Math.min(1, dt / this.TRANS_DUR);
+      if (dt >= this.TRANS_DUR) {
+        this.curIdx = this.nextIdx;
+        this.nextIdx = -1;
+        this.phase = 'idle';
+        this.slideStart = t;
+        this.mix = 0;
+      }
+    }
+  },
+};
+Photos.restore();
 
 const specTex = gl.createTexture();
 gl.activeTexture(gl.TEXTURE0);
@@ -1046,11 +1261,14 @@ const idb = (() => {
   function open() {
     if (dbp) return dbp;
     dbp = new Promise((res, rej) => {
-      const req = indexedDB.open('mvDB', 1);
+      const req = indexedDB.open('mvDB', 2);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('tracks')) {
           db.createObjectStore('tracks', { keyPath: 'id', autoIncrement: true });
+        }
+        if (!db.objectStoreNames.contains('images')) {
+          db.createObjectStore('images', { keyPath: 'id', autoIncrement: true });
         }
       };
       req.onsuccess = () => res(req.result);
@@ -1058,20 +1276,25 @@ const idb = (() => {
     });
     return dbp;
   }
-  const tx = (mode, fn) => open().then(db => new Promise((res, rej) => {
-    const t = db.transaction('tracks', mode);
-    const store = t.objectStore('tracks');
+  const txOn = (storeName, mode, fn) => open().then(db => new Promise((res, rej) => {
+    const t = db.transaction(storeName, mode);
+    const store = t.objectStore(storeName);
     let result;
     Promise.resolve(fn(store)).then(r => { result = r; }, rej);
     t.oncomplete = () => res(result);
     t.onerror    = () => rej(t.error);
     t.onabort    = () => rej(t.error);
   }));
+  const tx = (mode, fn) => txOn('tracks', mode, fn);
   return {
-    add: (rec)        => tx('readwrite', s => new Promise((r, j) => { const q = s.add(rec); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
-    put: (rec)        => tx('readwrite', s => { s.put(rec); }),
-    del: (id)         => tx('readwrite', s => { s.delete(id); }),
-    all: ()           => tx('readonly',  s => new Promise((r, j) => { const q = s.getAll(); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
+    add: (rec)  => tx('readwrite', s => new Promise((r, j) => { const q = s.add(rec); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
+    put: (rec)  => tx('readwrite', s => { s.put(rec); }),
+    del: (id)   => tx('readwrite', s => { s.delete(id); }),
+    all: ()     => tx('readonly',  s => new Promise((r, j) => { const q = s.getAll(); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
+    addImg: (rec) => txOn('images', 'readwrite', s => new Promise((r, j) => { const q = s.add(rec); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
+    delImg: (id)  => txOn('images', 'readwrite', s => { s.delete(id); }),
+    clearImg: ()  => txOn('images', 'readwrite', s => { s.clear(); }),
+    allImg: ()    => txOn('images', 'readonly',  s => new Promise((r, j) => { const q = s.getAll(); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
   };
 })();
 let current = -1;
@@ -1332,6 +1555,29 @@ poke();
 // Effect switcher
 document.getElementById('fx').addEventListener('click', () => useEffect(curEffect + 1));
 
+// Photos directory loader
+{
+  const photosBtn = document.getElementById('photos');
+  const imgInput  = document.getElementById('imgInput');
+  photosBtn.addEventListener('click', (e) => {
+    if (e.shiftKey && Photos.list.length) {
+      if (confirm(`Remove ${Photos.list.length} loaded photos?`)) Photos.clear();
+      return;
+    }
+    imgInput.click();
+  });
+  imgInput.addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files || []);
+    imgInput.value = '';
+    if (!files.length) return;
+    const added = await Photos.loadFiles(files);
+    if (added > 0) {
+      const idx = EFFECTS.findIndex(x => x.name === 'Photos');
+      if (idx >= 0) useEffect(idx);
+    }
+  });
+}
+
 // Fullscreen
 const fsBtn = document.getElementById('fs');
 const fsIcon = document.getElementById('fsIcon');
@@ -1461,6 +1707,43 @@ function frame() {
   gl.uniform1f(e.uBeat, beatEnv);
   gl.uniform1f(e.uBeatT, beatT);
   gl.uniform1f(e.uPulse, pulseClock);
+
+  // Photos effect: bind current/next image textures and drive transitions
+  if (EFFECTS[curEffect].name === 'Photos' && e.uTexA) {
+    Photos.tick(t);
+    if (Photos.list.length && Photos.curIdx >= 0) {
+      const cur = Photos.list[Photos.curIdx];
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, cur.tex);
+      gl.uniform1i(e.uTexA, 1);
+      gl.uniform1f(e.uAspectA, cur.aspect);
+      if (Photos.phase === 'fading' && Photos.nextIdx >= 0) {
+        const nxt = Photos.list[Photos.nextIdx];
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, nxt.tex);
+        gl.uniform1i(e.uTexB, 2);
+        gl.uniform1f(e.uAspectB, nxt.aspect);
+        gl.uniform1f(e.uMix, Photos.mix);
+        gl.uniform1f(e.uHasB, 1.0);
+      } else {
+        // bind a placeholder to uTexB anyway so the sampler is valid
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, cur.tex);
+        gl.uniform1i(e.uTexB, 2);
+        gl.uniform1f(e.uAspectB, cur.aspect);
+        gl.uniform1f(e.uMix, 0.0);
+        gl.uniform1f(e.uHasB, 0.0);
+      }
+      gl.uniform1f(e.uPhotoT, t - Photos.slideStart);
+      gl.uniform1f(e.uTransType, Photos.transType);
+    } else {
+      gl.uniform1f(e.uHasB, 0.0);
+      gl.uniform1f(e.uMix, 0.0);
+    }
+    // restore active texture for the spectrum sampler
+    gl.activeTexture(gl.TEXTURE0);
+  }
+
   gl.drawArrays(gl.TRIANGLES, 0, 6);
   requestAnimationFrame(frame);
 }
