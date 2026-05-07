@@ -1,19 +1,29 @@
 # MP3 Visualizer
 
-A single-file, zero-build, fully-local browser app: drag MP3 files onto the page,
-get a playlist plus 5 audio-reactive WebGL effects driven by the Web Audio API.
-No uploads, no server. Just open `index.html`.
+A single-file, zero-build, fully-local browser app: drop MP3 files onto the
+page, get a playlist plus six audio-reactive WebGL effects driven by the Web
+Audio API. Optionally point it at a folder of images and the **Photos** effect
+runs them as a beat-aware slideshow. Audio decode and image rendering all
+happen client-side; nothing is uploaded.
 
-## Usage
+Just open `index.html`.
 
-```
+```sh
 open index.html              # macOS
 xdg-open index.html          # Linux
 start index.html             # Windows
 ```
 
-Drop one or more `.mp3` files anywhere on the page (or click "Choose MP3 files"
-on the welcome card / the "Drop .mp3 files anywhere" hint in the header).
+## Audio
+
+Drag MP3 files anywhere on the page (or click "Choose MP3 files" on the welcome
+card / the "Drop .mp3 files anywhere" hint in the header).
+
+Playback runs through `decodeAudioData` → `AudioBufferSourceNode` rather than a
+`<audio>` element. Some VBR MP3s wrapped in `blob:` URLs cause the MediaElement
+path to mis-report duration and truncate playback after a few seconds; decoding
+to an `AudioBuffer` makes the duration the actual sample count, so playback
+can't be cut short.
 
 ### Controls
 
@@ -35,42 +45,73 @@ on the welcome card / the "Drop .mp3 files anywhere" hint in the header).
 
 - **♡ / ♥** — like a track (persisted with the track).
 - **✕** — remove from playlist.
-- Click anywhere on the row to play it.
-
-The mouse cursor and UI panels fade out after ~2.5s of no activity; any
-movement or keypress brings them back.
+- Click anywhere on the row to play.
 
 ## Effects
 
-| Name         | Description                                                   |
-|--------------|---------------------------------------------------------------|
-| Nebula       | FBM nebula clouds with a radial spectrum ring                 |
-| Star Nest    | Port of Pablo Román Andrioli's iconic Shadertoy fractal       |
-| Synthwave    | Retro grid + sun + classic green/yellow/red VU bars; palette cycles |
-| Kali         | Kali-set IFS fractal with orbit-trap glow                     |
-| Plasma Globe | Ray-marched volumetric plasma globe (after nimitz)            |
+Cycle with the labelled effect button or `E` (`Shift+E` reverses). The active
+effect index is persisted in `localStorage`.
 
-All effects react to bass / mids / highs and a beat detector on the bass band.
-The current effect is persisted in `localStorage`.
+| Name          | Description                                                  |
+|---------------|--------------------------------------------------------------|
+| Nebula        | FBM nebula clouds with a radial spectrum ring                |
+| Star Nest     | Port of Pablo Román Andrioli's classic Shadertoy fractal     |
+| Synthwave     | Retro grid + sun + green/yellow/red VU bars; palette cycles  |
+| Kali          | Kali-set IFS fractal with orbit-trap glow                    |
+| Plasma Globe  | Ray-marched volumetric plasma globe (after nimitz)           |
+| Photos        | Slideshow of user-loaded images with animated transitions    |
+
+All shader effects react to bass / mids / highs and a beat detector (transient
+detection on the bass band with a velocity-based pulse clock that surges on
+each kick).
+
+### Photos effect
+
+- **Photos…** button in the header opens a directory picker
+  (`webkitdirectory`). All `jpg / png / webp / gif / bmp / avif` files in the
+  chosen folder are decoded, uploaded as WebGL textures, and persisted to
+  IndexedDB.
+- Picking a new directory replaces the previous set. Shift-click the button to
+  clear all loaded photos.
+- Slides display at constant cover-fit (no intra-slide scale changes); each
+  one shows for ~6s, then a 1.6s transition picks one of six styles at random:
+  crossfade, diagonal wipe, chunky pixel dissolve, radial sweep, dual zoom,
+  ripple distortion. Beats add a subtle brightness flash.
+- Header HUD shows the current image's relative path while Photos is active;
+  the previously-loaded directory name is shown on the button label.
+
+## Idle UI
+
+The cursor and UI panels fade out after ~2.5s of no input (mouse, keys, wheel,
+touch). Any movement or keypress brings them back.
 
 ## Persistence
 
-- **Playlist** — Blobs are stored in IndexedDB (`mvDB.tracks`), so the
-  playlist (with names, durations, and likes) survives page reloads. Removing a
-  track also removes it from IDB.
-- **Toggles**, **effect selection**, **liked state** — all in `localStorage` /
-  IDB so they round-trip across sessions.
+- **Playlist** — Audio Blobs, names, durations, and likes live in IndexedDB
+  (`mvDB.tracks`). Survives reloads.
+- **Photos** — image Blobs and relative paths live in IndexedDB
+  (`mvDB.images`). Survives reloads. Last-picked directory name is in
+  `localStorage` (`mv.imgDir`).
+- **Toggles, effect selection, volume** — `localStorage` keys (`mv.shuf`,
+  `mv.loop`, `mv.autofx`, `mv.fx`).
+- DB schema is at version 2; the upgrade path adds the `images` store
+  alongside the existing `tracks` store.
 
-## Implementation
+## Implementation notes
 
-Everything is in `index.html`:
+Everything is in `index.html` — vanilla JS modules, no build, no deps.
 
 - A 2D fragment shader pipeline driven by an FFT spectrum texture (256 bins,
   uploaded each frame from `AnalyserNode`).
-- Per-frame uniforms include `uBass`, `uMid`, `uHi`, `uLevel` (smoothed bands),
-  plus `uBeat` (transient envelope), `uBeatT` (seconds since last beat) and
-  `uPulse` (a velocity-based clock that surges on beats — used by effects that
-  want motion locked to the beat rather than to wall-clock time).
+- Per-frame uniforms include `uBass`, `uMid`, `uHi`, `uLevel` (smoothed
+  bands), plus `uBeat` (transient envelope), `uBeatT` (seconds since last
+  beat) and `uPulse` — a velocity-based clock that surges on beats, used by
+  effects that want motion locked to the beat rather than wall-clock time.
+- For the Photos effect the shader has additional uniforms `uTexA / uTexB`
+  (current and next slide) plus `uMix / uTransType / uAspectA / uAspectB`.
+  The render loop binds image textures to `TEXTURE1 / TEXTURE2` and restores
+  `TEXTURE0` for the spectrum sampler so the other shaders keep working
+  unchanged.
 
 ## Credits
 
