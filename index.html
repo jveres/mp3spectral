@@ -58,6 +58,19 @@
     font-size: 14px;
   }
   .hint { color: var(--muted); font-size: 12px; }
+  .path-hud {
+    flex: 1;
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0 16px;
+    min-width: 0;
+  }
+  .path-hud:empty { display: none; }
 
   .playlist {
     align-self: end;
@@ -241,6 +254,7 @@
   <div class="ui">
     <header>
       <div class="brand">▮▮ Spectral</div>
+      <div class="path-hud" id="imgPath"></div>
       <div style="display:flex; align-items:center; gap:12px;">
         <div class="hint" id="hint" style="cursor:pointer; user-select:none;" title="Click to choose MP3 files">Drop .mp3 files anywhere</div>
         <button class="btn toggle" id="shuffle" title="Shuffle / random play" style="width:auto; padding:0 12px; border-radius:18px; font-size:12px;">Shuffle</button>
@@ -838,16 +852,15 @@ vec3 sB(vec2 uv){ return texture2D(uTexB, cover(uv, uAspectB)).rgb; }
 
 void main(){
   vec2 uv = gl_FragCoord.xy / uRes.xy;
-  // gentle Ken Burns: slow zoom in + drift on the current slide
-  float k  = 1.0 + uPhotoT*0.012 + uBass*0.025;
-  vec2  pn = vec2(sin(uPhotoT*0.07)*0.025, cos(uPhotoT*0.05)*0.020);
-  vec2 uvA = (uv - 0.5)/k + 0.5 + pn;
+  // images render at constant cover-fit; intra-slide motion was causing
+  // visible size jumps so it's removed. Transitions still animate.
+  vec2 uvA = uv;
 
   if (uHasB < 0.5) {
     vec3 col = sA(uvA);
-    col *= 1.0 + uBeat*0.18;
+    col *= 1.0 + uBeat*0.12;
     float r = length(uv - 0.5);
-    col *= 1.0 - r*r*0.25;
+    col *= 1.0 - r*r*0.18;
     gl_FragColor = vec4(col, 1.0);
     return;
   }
@@ -973,6 +986,12 @@ function useEffect(i) {
   gl.uniform1i(e.uSpec, 0);
   document.getElementById('fxName').textContent = EFFECTS[curEffect].name;
   try { localStorage.setItem('mv.fx', String(curEffect)); } catch {}
+  // clear the photo-path HUD when leaving Photos. Don't reference Photos here
+  // since useEffect can be called before that const is initialized (TDZ).
+  if (EFFECTS[curEffect].name !== 'Photos') {
+    const el = document.getElementById('imgPath');
+    if (el) el.textContent = '';
+  }
 }
 const savedFx = parseInt(localStorage.getItem('mv.fx') || '0', 10);
 useEffect(Number.isFinite(savedFx) ? savedFx : 0);
@@ -1015,7 +1034,7 @@ const Photos = {
       const img = await this.makeImage(rec.blob);
       const tex = this.makeTex(img);
       this.list.push({
-        id: rec.id, name: rec.name, blob: rec.blob,
+        id: rec.id, name: rec.name, path: rec.path || rec.name, blob: rec.blob,
         image: img, tex,
         aspect: img.naturalWidth / Math.max(1, img.naturalHeight),
       });
@@ -1029,9 +1048,10 @@ const Photos = {
     let added = 0;
     for (const f of files) {
       if (!ok.test(f.name) && !(f.type || '').startsWith('image/')) continue;
+      const path = f.webkitRelativePath || f.name;
       let id = null;
-      try { id = await idb.addImg({ name: f.name, blob: f }); } catch (e) { console.warn('img persist', e); }
-      await this.addOne({ id, name: f.name, blob: f });
+      try { id = await idb.addImg({ name: f.name, path, blob: f }); } catch (e) { console.warn('img persist', e); }
+      await this.addOne({ id, name: f.name, path, blob: f });
       added++;
     }
     return added;
@@ -1058,6 +1078,16 @@ const Photos = {
 
   tick(t) {
     if (this.list.length === 0) return;
+    // detect re-entry (tab refocus, effect switch back, etc) — if there has
+    // been a >1s gap since the last tick, restart the current slide so Ken
+    // Burns / transitions begin fresh instead of jumping to a stale offset
+    if (this.lastTickT != null && (t - this.lastTickT) > 1.0) {
+      this.slideStart = t;
+      this.phase = 'idle';
+      this.nextIdx = -1;
+      this.mix = 0;
+    }
+    this.lastTickT = t;
     if (this.curIdx < 0) {
       this.curIdx = 0;
       this.slideStart = t;
@@ -1557,9 +1587,24 @@ document.getElementById('fx').addEventListener('click', () => useEffect(curEffec
 {
   const photosBtn = document.getElementById('photos');
   const imgInput  = document.getElementById('imgInput');
+  function syncPhotosBtn() {
+    const dir = localStorage.getItem('mv.imgDir') || '';
+    if (dir) {
+      photosBtn.textContent = `Photos: ${dir}`;
+      photosBtn.title = `Last loaded directory: ${dir} (click to pick, Shift-click to clear)`;
+    } else {
+      photosBtn.textContent = 'Photos…';
+      photosBtn.title = 'Load images for the Photos effect (Shift-click to clear)';
+    }
+  }
+  syncPhotosBtn();
   photosBtn.addEventListener('click', (e) => {
     if (e.shiftKey && Photos.list.length) {
-      if (confirm(`Remove ${Photos.list.length} loaded photos?`)) Photos.clear();
+      if (confirm(`Remove ${Photos.list.length} loaded photos?`)) {
+        Photos.clear();
+        localStorage.removeItem('mv.imgDir');
+        syncPhotosBtn();
+      }
       return;
     }
     imgInput.click();
@@ -1568,6 +1613,16 @@ document.getElementById('fx').addEventListener('click', () => useEffect(curEffec
     const files = Array.from(e.target.files || []);
     imgInput.value = '';
     if (!files.length) return;
+    // remember the directory name (from webkitRelativePath); blob path is not
+    // accessible to JS, so we just save the top-level folder name as a hint
+    const rel = files[0].webkitRelativePath || '';
+    const dirName = rel.split('/')[0] || '';
+    if (dirName) {
+      localStorage.setItem('mv.imgDir', dirName);
+      syncPhotosBtn();
+    }
+    // replace the previous directory's photos rather than accumulating
+    await Photos.clear();
     const added = await Photos.loadFiles(files);
     if (added > 0) {
       const idx = EFFECTS.findIndex(x => x.name === 'Photos');
@@ -1711,6 +1766,9 @@ function frame() {
     Photos.tick(t);
     if (Photos.list.length && Photos.curIdx >= 0) {
       const cur = Photos.list[Photos.curIdx];
+      const pathEl = document.getElementById('imgPath');
+      const nextText = cur.path || cur.name || '';
+      if (pathEl && pathEl.textContent !== nextText) pathEl.textContent = nextText;
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, cur.tex);
       gl.uniform1i(e.uTexA, 1);
