@@ -834,21 +834,44 @@ uniform float uAspectA;
 uniform float uAspectB;
 uniform float uPhotoT;
 uniform float uTransType;
+uniform float uKenSeed;
+uniform float uSlideDur;
 
-// map screen uv [0,1] to image uv with cover-fit + flip (textures uploaded
-// without UNPACK_FLIP_Y, so we flip Y here)
-vec2 cover(vec2 uv, float imgAspect) {
+// map screen uv [0,1] to image uv with cover-fit + Y flip + optional pan in
+// pre-flip texture-space. (Textures are uploaded without UNPACK_FLIP_Y_WEBGL
+// so we flip Y in the shader.) `pan` is added BEFORE the flip and must satisfy
+// |pan| <= (1 - sc) / 2 to stay within the image.
+vec2 cover(vec2 uv, float imgAspect, vec2 pan) {
   float scrA = uRes.x / uRes.y;
   vec2 sc = vec2(1.0);
   if (imgAspect > scrA) sc.x = scrA / imgAspect;
   else                  sc.y = imgAspect / scrA;
-  vec2 q = (uv - 0.5) * sc + 0.5;
+  vec2 q = (uv - 0.5) * sc + 0.5 + pan;
   q.y = 1.0 - q.y;
   return q;
 }
 
-vec3 sA(vec2 uv){ return texture2D(uTexA, cover(uv, uAspectA)).rgb; }
-vec3 sB(vec2 uv){ return texture2D(uTexB, cover(uv, uAspectB)).rgb; }
+// Compute the auto Ken-Burns pan offset for the active slide. We slide the
+// visible cover window from centered (pan=0) toward one edge so previously
+// hidden parts of the image come into view across the slide. Direction is
+// derived from uKenSeed so each slide moves differently.
+vec2 kenPan(float imgAspect) {
+  float scrA = uRes.x / uRes.y;
+  vec2 sc = vec2(1.0);
+  if (imgAspect > scrA) sc.x = scrA / imgAspect;
+  else                  sc.y = imgAspect / scrA;
+  vec2 budget = (1.0 - sc) * 0.5;       // how far we can shift before edges
+  float prog  = clamp(uPhotoT / uSlideDur, 0.0, 1.0);
+  float eased = smoothstep(0.0, 1.0, prog);
+  float ang   = uKenSeed * 6.2831853;
+  vec2 dir    = vec2(cos(ang), sin(ang));
+  // start at centered (so it matches the inert cover used during transition)
+  // and slide toward the chosen direction across the slide
+  return eased * budget * dir;
+}
+
+vec3 sA(vec2 uv){ return texture2D(uTexA, cover(uv, uAspectA, kenPan(uAspectA))).rgb; }
+vec3 sB(vec2 uv){ return texture2D(uTexB, cover(uv, uAspectB, vec2(0.0))).rgb; }
 
 void main(){
   vec2 uv = gl_FragCoord.xy / uRes.xy;
@@ -966,6 +989,8 @@ function buildProgram(fsSrc) {
     uAspectB: gl.getUniformLocation(p, 'uAspectB'),
     uPhotoT: gl.getUniformLocation(p, 'uPhotoT'),
     uTransType: gl.getUniformLocation(p, 'uTransType'),
+    uKenSeed: gl.getUniformLocation(p, 'uKenSeed'),
+    uSlideDur: gl.getUniformLocation(p, 'uSlideDur'),
   };
 }
 
@@ -1006,7 +1031,8 @@ const Photos = {
   phaseT0: 0,
   slideStart: 0,
   transType: 0,
-  SLIDE_DUR: 6.0,   // seconds per slide before transitioning
+  kenSeed: Math.random(), // direction of the auto-pan for the current slide
+  SLIDE_DUR: 8.0,   // seconds per slide (longer so the auto-pan reads as motion)
   TRANS_DUR: 1.6,   // seconds for the transition itself
 
   makeImage(blob) {
@@ -1091,6 +1117,7 @@ const Photos = {
     if (this.curIdx < 0) {
       this.curIdx = 0;
       this.slideStart = t;
+      this.kenSeed = Math.random();
     }
     if (this.phase === 'idle') {
       if (this.list.length > 1 && (t - this.slideStart) > this.SLIDE_DUR) {
@@ -1110,6 +1137,7 @@ const Photos = {
         this.nextIdx = -1;
         this.phase = 'idle';
         this.slideStart = t;
+        this.kenSeed = Math.random();   // fresh pan direction for the new slide
         this.mix = 0;
       }
     }
@@ -1792,6 +1820,8 @@ function frame() {
       }
       gl.uniform1f(e.uPhotoT, t - Photos.slideStart);
       gl.uniform1f(e.uTransType, Photos.transType);
+      gl.uniform1f(e.uKenSeed, Photos.kenSeed);
+      gl.uniform1f(e.uSlideDur, Photos.SLIDE_DUR);
     } else {
       gl.uniform1f(e.uHasB, 0.0);
       gl.uniform1f(e.uMix, 0.0);
