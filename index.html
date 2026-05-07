@@ -994,7 +994,7 @@ function renderPlaylist() {
       <button class="rm" title="Remove">✕</button>
     `;
     row.addEventListener('click', (e) => {
-      if (e.target.tagName === 'BUTTON') return;
+      if (e.target.closest('button')) return;
       playIndex(i);
     });
     row.querySelector('button.like').addEventListener('click', (e) => {
