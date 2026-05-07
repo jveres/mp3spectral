@@ -895,35 +895,131 @@ window.addEventListener('resize', resize);
 resize();
 
 // ---------- Audio ----------
-const audio = new Audio();
-// blob: URLs are same-origin — no CORS needed; setting crossOrigin can break
-// playback in some browsers when src is a blob:.
-// preload='auto' so the browser fully fetches the file and reports accurate
-// duration; some VBR MP3s otherwise show duration=Infinity until full decode.
-audio.preload = 'auto';
+// We don't use a <audio> element because some VBR MP3s wrapped in blob:
+// URLs cause browsers to report wrong durations and truncate playback.
+// Decoding via Web Audio bypasses the whole MediaElement metadata path.
+const Player = (() => {
+  let ctx = null, analyser = null, gain = null;
+  let buffer = null, source = null;
+  let startCtxT = 0, startOffset = 0;
+  let paused = true, pausedAt = 0;
+  let loadGen = 0;
+  let volume = 0.85;
+  let onPlay = null, onPause = null, onEnded = null;
 
-// per-track playback bookkeeping used to gate auto-advance (some browsers
-// mis-report duration for blob: VBR MP3s, causing 'ended' to fire early)
-let maxObservedTime = 0;
-let trackLoadedAt = 0;
+  function ensure() {
+    if (ctx) return;
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.82;
+    gain = ctx.createGain();
+    gain.gain.value = volume;
+    analyser.connect(gain);
+    gain.connect(ctx.destination);
+  }
+  function killSource() {
+    if (!source) return;
+    try { source.onended = null; source.stop(); } catch {}
+    try { source.disconnect(); } catch {}
+    source = null;
+  }
+  function nowTime() {
+    if (paused || !ctx || !buffer) return pausedAt;
+    return Math.min(buffer.duration, startOffset + (ctx.currentTime - startCtxT));
+  }
 
-let audioCtx = null, analyser = null, sourceNode = null, gainNode = null;
+  return {
+    ensure,
+    get analyser() { return analyser; },
+    get duration()    { return buffer ? buffer.duration : 0; },
+    get currentTime() { return nowTime(); },
+    get paused()      { return paused; },
+    get hasBuffer()   { return !!buffer; },
+    set onPlay(fn)    { onPlay  = fn; },
+    set onPause(fn)   { onPause = fn; },
+    set onEnded(fn)   { onEnded = fn; },
+    setVolume(v) { volume = v; if (gain) gain.gain.value = v; },
+    resumeCtx()  { ensure(); ctx.resume(); },
+
+    async loadBlob(blob) {
+      ensure();
+      const id = ++loadGen;
+      killSource();
+      buffer = null;
+      pausedAt = 0;
+      paused = true;
+      try {
+        const ab = await blob.arrayBuffer();
+        const decoded = await ctx.decodeAudioData(ab);
+        if (id !== loadGen) return null;     // a newer load superseded us
+        buffer = decoded;
+        return decoded.duration;
+      } catch (err) {
+        console.warn('decodeAudioData failed', err);
+        return null;
+      }
+    },
+
+    play() {
+      ensure();
+      if (!buffer) return;
+      ctx.resume();
+      killSource();
+      const s = ctx.createBufferSource();
+      s.buffer = buffer;
+      s.connect(analyser);
+      const myGen = loadGen;
+      s.onended = () => {
+        if (s !== source || myGen !== loadGen) return;
+        // Natural end. We always null onended before calling stop() ourselves,
+        // so reaching this code path means playback completed.
+        paused = true;
+        pausedAt = buffer ? buffer.duration : 0;
+        source = null;
+        if (onEnded) onEnded();
+      };
+      startOffset = Math.max(0, Math.min(buffer.duration, pausedAt));
+      startCtxT = ctx.currentTime;
+      try { s.start(0, startOffset); }
+      catch (err) { console.warn('start failed', err); return; }
+      source = s;
+      paused = false;
+      if (onPlay) onPlay();
+    },
+
+    pause() {
+      if (paused) return;
+      const t = nowTime();
+      killSource();
+      pausedAt = t;
+      paused = true;
+      if (onPause) onPause();
+    },
+
+    togglePlay() { if (paused) this.play(); else this.pause(); },
+
+    seek(t) {
+      if (!buffer) return;
+      const tgt = Math.max(0, Math.min(buffer.duration - 0.05, t));
+      const wasPlaying = !paused;
+      killSource();
+      pausedAt = tgt;
+      paused = true;
+      if (wasPlaying) this.play();
+    },
+
+    stop() {
+      killSource();
+      buffer = null;
+      pausedAt = 0;
+      paused = true;
+    },
+  };
+})();
+
 let freqData = null, specBytes = new Uint8Array(256);
-
-function ensureAudio() {
-  if (audioCtx) return;
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  sourceNode = audioCtx.createMediaElementSource(audio);
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 1024;
-  analyser.smoothingTimeConstant = 0.82;
-  gainNode = audioCtx.createGain();
-  gainNode.gain.value = parseInt(volEl.value, 10) / 100;
-  sourceNode.connect(analyser);
-  analyser.connect(gainNode);
-  gainNode.connect(audioCtx.destination);
-  freqData = new Uint8Array(analyser.frequencyBinCount);
-}
+function ensureAudio() { Player.ensure(); }
 
 // ---------- Playlist ----------
 const playlistEl = document.getElementById('tracks');
@@ -1057,10 +1153,11 @@ function removeTrack(i) {
   if (tracks[i].id != null) idb.del(tracks[i].id).catch(() => {});
   tracks.splice(i, 1);
   if (wasCurrent) {
-    audio.pause();
+    Player.stop();
     if (tracks.length) {
-      current = Math.min(i, tracks.length - 1);
-      playIndex(current);
+      current = -1;
+      const next = Math.min(i, tracks.length - 1);
+      playIndex(next);
     } else {
       current = -1;
       nowEl.textContent = '—';
@@ -1071,22 +1168,13 @@ function removeTrack(i) {
   renderPlaylist();
 }
 
-function playIndex(i) {
+async function playIndex(i) {
   if (i < 0 || i >= tracks.length) return;
   const wasDifferent = current !== i;
   current = i;
-  // pause first so pending play() promises don't reject with AbortError when
-  // we change src out from under them
-  try { audio.pause(); } catch {}
-  maxObservedTime = 0;
-  trackLoadedAt = performance.now();
-  audio.src = tracks[i].url;
-  nowEl.textContent = tracks[i].name;
-  ensureAudio();
-  audioCtx.resume();
-  audio.play().catch(err => {
-    if (err && err.name !== 'AbortError') console.warn('audio.play()', err);
-  });
+  const t = tracks[i];
+  Player.resumeCtx();
+  nowEl.textContent = t.name;
   if (autoSwitchFx && wasDifferent) {
     let next = curEffect;
     if (programs.length > 1) {
@@ -1095,6 +1183,18 @@ function playIndex(i) {
     useEffect(next);
   }
   renderPlaylist();
+  // decode + play asynchronously (the only reliable way for VBR MP3 blobs)
+  const dur = await Player.loadBlob(t.blob);
+  if (current !== i) return; // user switched while decoding
+  if (dur != null && dur > 0 && (!t.dur || Math.abs(t.dur - dur) > 0.5)) {
+    t.dur = dur;
+    if (t.id != null) {
+      idb.put({ id: t.id, name: t.name, dur: t.dur, blob: t.blob, liked: t.liked }).catch(() => {});
+    }
+    renderPlaylist();
+  }
+  durEl.textContent = fmtTime(Player.duration);
+  Player.play();
 }
 
 function togglePlay() {
@@ -1102,80 +1202,36 @@ function togglePlay() {
     if (tracks.length) playIndex(0);
     return;
   }
-  ensureAudio();
-  audioCtx.resume();
-  if (audio.paused) audio.play(); else audio.pause();
+  Player.resumeCtx();
+  if (!Player.hasBuffer) {
+    playIndex(current);
+    return;
+  }
+  Player.togglePlay();
 }
 
 playBtn.addEventListener('click', togglePlay);
 prevBtn.addEventListener('click', () => { const n = pickNext(-1); if (n >= 0) playIndex(n); });
 nextBtn.addEventListener('click', () => { const n = pickNext( 1); if (n >= 0) playIndex(n); });
 
-audio.addEventListener('play', () => {
-  playIcon.innerHTML = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
-});
-audio.addEventListener('pause', () => {
-  playIcon.innerHTML = '<path d="M8 5v14l11-7L8 5z"/>';
-});
-audio.addEventListener('ended', () => {
-  // only auto-advance on a genuine end-of-track. browsers occasionally fire
-  // 'ended' early for blob: MP3s with bad/missing VBR headers (duration is
-  // mis-reported as a few seconds, audio "ends" at that point).
-  if (!audio.ended) return;
-  const d = audio.duration;
-  if (!isFinite(d) || d <= 0) return;
-  // refuse to advance if reported duration is implausibly short, OR if the
-  // wall-clock playback has been less than 15s — protects against the
-  // wrong-duration case while still allowing real short tracks to auto-advance
-  // when the user manually plays them.
-  const wallClock = (performance.now() - trackLoadedAt) / 1000;
-  if (d < 5) return;
-  if (wallClock < 15) return;
-  // also require we observed playback near the end at least once
-  if (maxObservedTime < d - 1.0 && maxObservedTime < 30) return;
+Player.onPlay  = () => { playIcon.innerHTML = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>'; };
+Player.onPause = () => { playIcon.innerHTML = '<path d="M8 5v14l11-7L8 5z"/>'; };
+Player.onEnded = () => {
   const n = pickNext(1);
   if (n >= 0) playIndex(n);
-});
-audio.addEventListener('loadedmetadata', () => {
-  const d = audio.duration;
-  durEl.textContent = fmtTime(d);
-  if (current >= 0 && isFinite(d) && d > 0) {
-    const t = tracks[current];
-    const wasUnknown = !t.dur;
-    t.dur = d;
-    renderPlaylist();
-    // persist duration once, when first known — avoid rewriting the blob each play
-    if (wasUnknown && t.id != null) {
-      idb.put({ id: t.id, name: t.name, dur: t.dur, blob: t.blob, liked: t.liked }).catch(() => {});
-    }
-  }
-});
-audio.addEventListener('error', (e) => console.warn('audio error', audio.error));
-audio.addEventListener('timeupdate', () => {
-  if (audio.currentTime > maxObservedTime) maxObservedTime = audio.currentTime;
-  if (seeking) return;
-  curEl.textContent = fmtTime(audio.currentTime);
-  if (audio.duration) {
-    seekEl.value = Math.round((audio.currentTime / audio.duration) * 1000);
-  }
-});
+};
 
-seekEl.addEventListener('input', () => { seeking = true; });
+seekEl.addEventListener('input',  () => { seeking = true; });
 seekEl.addEventListener('change', () => {
-  const d = audio.duration;
-  if (isFinite(d) && d > 0) {
-    // clamp away from the very end so we don't race the 'ended' event
-    audio.currentTime = Math.max(0, Math.min(d - 0.05, (seekEl.value / 1000) * d));
-  }
+  const d = Player.duration;
+  if (d > 0) Player.seek((seekEl.value / 1000) * d);
   seeking = false;
 });
 
 volEl.addEventListener('input', () => {
-  const v = parseInt(volEl.value, 10) / 100;
-  if (gainNode) gainNode.gain.value = v;
-  audio.volume = v;
+  Player.setVolume(parseInt(volEl.value, 10) / 100);
 });
-audio.volume = parseInt(volEl.value, 10) / 100;
+Player.setVolume(parseInt(volEl.value, 10) / 100);
 
 // Restore persisted playlist from IndexedDB on startup
 idb.all().then(records => {
@@ -1307,11 +1363,8 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyE') { e.preventDefault(); useEffect(curEffect + (e.shiftKey ? -1 : 1)); }
   else if (e.code === 'ArrowRight' && e.shiftKey) nextBtn.click();
   else if (e.code === 'ArrowLeft' && e.shiftKey) prevBtn.click();
-  else if (e.code === 'ArrowRight') {
-    const d = audio.duration;
-    if (isFinite(d) && d > 0) audio.currentTime = Math.min(d - 0.05, audio.currentTime + 5);
-  }
-  else if (e.code === 'ArrowLeft') audio.currentTime = Math.max(0, audio.currentTime - 5);
+  else if (e.code === 'ArrowRight') Player.seek(Player.currentTime + 5);
+  else if (e.code === 'ArrowLeft')  Player.seek(Math.max(0, Player.currentTime - 5));
 });
 
 // ---------- Render Loop ----------
@@ -1333,8 +1386,19 @@ function downsampleSpec(src, dst) {
 
 function frame() {
   resize();
+  // UI tick: progress bar + current-time label (replaces audio.timeupdate)
+  if (!seeking) {
+    const ct = Player.currentTime;
+    const d  = Player.duration;
+    curEl.textContent = fmtTime(ct);
+    if (d > 0) seekEl.value = Math.round((ct / d) * 1000);
+  }
   let bass = 0, mid = 0, hi = 0, level = 0;
+  const analyser = Player.analyser;
   if (analyser) {
+    if (!freqData || freqData.length !== analyser.frequencyBinCount) {
+      freqData = new Uint8Array(analyser.frequencyBinCount);
+    }
     analyser.getByteFrequencyData(freqData);
     const N = freqData.length;
     const bEnd = Math.floor(N * 0.08);
