@@ -1201,6 +1201,15 @@ const Player = (() => {
     gain.gain.value = volume;
     analyser.connect(gain);
     gain.connect(ctx.destination);
+    // If the OS / another tab interrupts the AudioContext (common on iOS or
+    // when another tab grabs audio focus), try to resume it as soon as the
+    // state changes back. Without this, ctx stays 'suspended'/'interrupted'
+    // and the BufferSource plays silently.
+    ctx.addEventListener('statechange', () => {
+      if (ctx.state === 'suspended' || ctx.state === 'interrupted') {
+        ctx.resume().catch(() => {});
+      }
+    });
   }
   function killSource() {
     if (!source) return;
@@ -1709,6 +1718,17 @@ function syncFsIcon() {
 }
 document.addEventListener('fullscreenchange', syncFsIcon);
 document.addEventListener('webkitfullscreenchange', syncFsIcon);
+
+// Resume the AudioContext when the tab regains focus. Browsers (and the OS,
+// on iOS/macOS especially) suspend or 'interrupt' a context when another tab
+// takes audio focus; without this, returning to our tab and pressing play
+// would create a BufferSource that plays silently.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    try { Player.resumeCtx(); } catch {}
+  }
+});
+window.addEventListener('focus', () => { try { Player.resumeCtx(); } catch {} });
 
 // Keyboard
 window.addEventListener('keydown', (e) => {
