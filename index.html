@@ -321,6 +321,10 @@
   </div>
 
   <input type="file" id="fileInput" accept="audio/mpeg,audio/mp3,.mp3" multiple style="display:none" />
+
+  <!-- Howler.js handles AudioContext lifecycle, mobile/iOS unlock, and tab
+       interruption recovery so we don't have to maintain ad-hoc patches. -->
+  <script src="https://cdn.jsdelivr.net/npm/howler@2.2.4/dist/howler.min.js" crossorigin="anonymous"></script>
   <input type="file" id="imgInput" accept="image/*" multiple webkitdirectory style="display:none" />
 
   <div class="drop-overlay" id="drop">
@@ -1179,174 +1183,114 @@ window.addEventListener('resize', resize);
 resize();
 
 // ---------- Audio ----------
-// We don't use a <audio> element because some VBR MP3s wrapped in blob:
-// URLs cause browsers to report wrong durations and truncate playback.
-// Decoding via Web Audio bypasses the whole MediaElement metadata path.
+// Backed by Howler.js, which handles AudioContext lifecycle, iOS / mobile
+// audio unlock, and recovery from cross-tab audio interruptions. We splice
+// our analyser into Howler's master output so the visualizer keeps working.
 const Player = (() => {
-  let ctx = null, analyser = null, gain = null;
-  let buffer = null, source = null;
-  let startCtxT = 0, startOffset = 0;
-  let paused = true, pausedAt = 0;
-  let loadGen = 0;
+  let current = null;       // active Howl instance
+  let analyser = null;
+  let analyserHooked = false;
+  let pendingSrc = 0;
   let volume = 0.85;
+  let pendingUrl = null;    // object URL of the active Howl, revoked on unload
   let onPlay = null, onPause = null, onEnded = null;
 
-  function ensure() {
-    if (ctx) return;
-    ctx = new (window.AudioContext || window.webkitAudioContext)();
-    analyser = ctx.createAnalyser();
+  function hookAnalyser() {
+    if (analyserHooked) return;
+    if (typeof Howler === 'undefined' || !Howler.ctx || !Howler.masterGain) return;
+    analyser = Howler.ctx.createAnalyser();
     analyser.fftSize = 1024;
     analyser.smoothingTimeConstant = 0.82;
-    gain = ctx.createGain();
-    gain.gain.value = volume;
-    analyser.connect(gain);
-    gain.connect(ctx.destination);
-    // If the OS / another tab interrupts the AudioContext (common on iOS or
-    // when another tab grabs audio focus), try to resume it as soon as the
-    // state changes back. Without this, ctx stays 'suspended'/'interrupted'
-    // and the BufferSource plays silently.
-    ctx.addEventListener('statechange', () => {
-      if (ctx.state === 'suspended' || ctx.state === 'interrupted') {
-        ctx.resume().catch(() => {});
-      }
-    });
+    // Splice analyser between Howler.masterGain and the destination.
+    try { Howler.masterGain.disconnect(); } catch {}
+    Howler.masterGain.connect(analyser);
+    analyser.connect(Howler.ctx.destination);
+    analyserHooked = true;
   }
-  function killSource() {
-    if (!source) return;
-    try { source.onended = null; source.stop(); } catch {}
-    try { source.disconnect(); } catch {}
-    source = null;
-  }
-  function nowTime() {
-    if (paused || !ctx || !buffer) return pausedAt;
-    return Math.min(buffer.duration, startOffset + (ctx.currentTime - startCtxT));
+
+  function unloadCurrent() {
+    if (current) {
+      try { current.off(); } catch {}
+      try { current.unload(); } catch {}
+      current = null;
+    }
+    if (pendingUrl) {
+      try { URL.revokeObjectURL(pendingUrl); } catch {}
+      pendingUrl = null;
+    }
   }
 
   return {
-    ensure,
+    ensure() { /* Howler initialises lazily on first sound; nothing to do */ },
     get analyser() { return analyser; },
-    get duration()    { return buffer ? buffer.duration : 0; },
-    get currentTime() { return nowTime(); },
-    get paused()      { return paused; },
-    get hasBuffer()   { return !!buffer; },
+    get duration()    { return current ? (current.duration() || 0) : 0; },
+    get currentTime() {
+      if (!current) return 0;
+      try { const v = current.seek(); return typeof v === 'number' ? v : 0; }
+      catch { return 0; }
+    },
+    get paused()      { return !current || !current.playing(); },
+    get hasBuffer()   { return !!current; },
+    get state()       { return (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'none'; },
     set onPlay(fn)    { onPlay  = fn; },
     set onPause(fn)   { onPause = fn; },
     set onEnded(fn)   { onEnded = fn; },
-    setVolume(v) { volume = v; if (gain) gain.gain.value = v; },
-    resumeCtx()  { ensure(); ctx.resume(); },
-    get state() { return ctx ? ctx.state : 'none'; },
 
-    // Synchronously dispose a wedged AudioContext and create a fresh one.
-    // Must be called inside a user-gesture stack (e.g. a click handler) so
-    // the immediately-following resumeCtx can actually bring the new ctx to
-    // 'running'. ctx.close() returns a Promise but the close is initiated
-    // synchronously; we ignore it.
-    hardResetSync() {
-      killSource();
-      if (ctx) { try { ctx.close(); } catch {} }
-      ctx = null; analyser = null; gain = null;
-      buffer = null; pausedAt = 0; paused = true;
-      ensure();
+    setVolume(v) {
+      volume = v;
+      if (typeof Howler !== 'undefined') Howler.volume(v);
+    },
+    resumeCtx() {
+      if (typeof Howler === 'undefined') return;
+      if (Howler.ctx) { try { Howler.ctx.resume(); } catch {} }
+    },
+    hardResetSync() { unloadCurrent(); },  // Howler manages ctx itself
+
+    loadBlob(blob) {
+      const myId = ++pendingSrc;
+      unloadCurrent();
+      const url = URL.createObjectURL(blob);
+      pendingUrl = url;
+      return new Promise((resolve) => {
+        const sound = new Howl({
+          src: [url],
+          format: ['mp3', 'mpeg'],
+          html5: false,        // Web Audio path so the analyser sees the signal
+          volume,
+          onload() {
+            if (myId !== pendingSrc) {
+              try { sound.unload(); } catch {}
+              try { URL.revokeObjectURL(url); } catch {}
+              return resolve(null);
+            }
+            current = sound;
+            hookAnalyser();
+            resolve(sound.duration());
+          },
+          onloaderror(_id, err) {
+            console.warn('Howl load error', err);
+            try { URL.revokeObjectURL(url); } catch {}
+            if (pendingUrl === url) pendingUrl = null;
+            resolve(null);
+          },
+          onplay()  { if (onPlay)  onPlay();  },
+          onpause() { if (onPause) onPause(); },
+          onstop()  { if (onPause) onPause(); },
+          onend()   { if (onEnded) onEnded(); },
+        });
+      });
     },
 
-    // Tear down a wedged AudioContext (state stuck on suspended/interrupted/
-    // closed) and create a fresh one. Caller must reload + restart playback
-    // since AudioBuffers don't carry across contexts.
-    async resetCtx() {
-      killSource();
-      const old = ctx;
-      ctx = null; analyser = null; gain = null;
-      buffer = null; pausedAt = 0; paused = true;
-      if (old) { try { await old.close(); } catch {} }
-      ensure();
-    },
-
-    // Make sure the context is in 'running' state. Try resume first; if the
-    // browser refuses to resume an interrupted context (iOS / cross-tab audio
-    // focus), fall back to resetCtx and report that the buffer was dropped so
-    // the caller knows it needs to reload.
-    async ensureRunning() {
-      if (!ctx) { ensure(); }
-      if (ctx.state === 'running') return { reset: false };
-      try { await ctx.resume(); } catch {}
-      if (ctx.state === 'running') return { reset: false };
-      await this.resetCtx();
-      return { reset: true };
-    },
-
-    async loadBlob(blob) {
-      ensure();
-      const id = ++loadGen;
-      killSource();
-      buffer = null;
-      pausedAt = 0;
-      paused = true;
-      try {
-        const ab = await blob.arrayBuffer();
-        const decoded = await ctx.decodeAudioData(ab);
-        if (id !== loadGen) return null;     // a newer load superseded us
-        buffer = decoded;
-        return decoded.duration;
-      } catch (err) {
-        console.warn('decodeAudioData failed', err);
-        return null;
-      }
-    },
-
-    play() {
-      ensure();
-      if (!buffer) return;
-      ctx.resume();
-      killSource();
-      const s = ctx.createBufferSource();
-      s.buffer = buffer;
-      s.connect(analyser);
-      const myGen = loadGen;
-      s.onended = () => {
-        if (s !== source || myGen !== loadGen) return;
-        // Natural end. We always null onended before calling stop() ourselves,
-        // so reaching this code path means playback completed.
-        paused = true;
-        pausedAt = buffer ? buffer.duration : 0;
-        source = null;
-        if (onEnded) onEnded();
-      };
-      startOffset = Math.max(0, Math.min(buffer.duration, pausedAt));
-      startCtxT = ctx.currentTime;
-      try { s.start(0, startOffset); }
-      catch (err) { console.warn('start failed', err); return; }
-      source = s;
-      paused = false;
-      if (onPlay) onPlay();
-    },
-
-    pause() {
-      if (paused) return;
-      const t = nowTime();
-      killSource();
-      pausedAt = t;
-      paused = true;
-      if (onPause) onPause();
-    },
-
-    togglePlay() { if (paused) this.play(); else this.pause(); },
-
+    play()  { if (current) { try { current.play(); } catch (e) { console.warn(e); } } },
+    pause() { if (current) { try { current.pause(); } catch {} } },
+    togglePlay() { if (this.paused) this.play(); else this.pause(); },
     seek(t) {
-      if (!buffer) return;
-      const tgt = Math.max(0, Math.min(buffer.duration - 0.05, t));
-      const wasPlaying = !paused;
-      killSource();
-      pausedAt = tgt;
-      paused = true;
-      if (wasPlaying) this.play();
+      if (!current) return;
+      const d = current.duration();
+      const tgt = Math.max(0, Math.min((d || 0) - 0.05, t));
+      try { current.seek(tgt); } catch {}
     },
-
-    stop() {
-      killSource();
-      buffer = null;
-      pausedAt = 0;
-      paused = true;
-    },
+    stop() { unloadCurrent(); },
   };
 })();
 
