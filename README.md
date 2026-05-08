@@ -1,12 +1,13 @@
 # MP3 Visualizer
 
-A single-file, zero-build, fully-local browser app: drop MP3 files onto the
-page, get a playlist plus six audio-reactive WebGL effects driven by the Web
-Audio API. Optionally point it at a folder of images and the **Photos** effect
-runs them as a beat-aware slideshow. Audio decode and image rendering all
-happen client-side; nothing is uploaded.
+A single-file, near-zero-build, fully-local browser app: drop MP3 files onto
+the page, get a playlist plus six audio-reactive WebGL effects driven by the
+Web Audio API. Optionally point it at a folder of images and the **Photos**
+effect runs them as a beat-aware slideshow. Audio decode and image rendering
+all happen client-side; nothing is uploaded.
 
-Just open `index.html`.
+Just open `index.html`. The page loads [Howler.js](https://howlerjs.com/) from
+a CDN for audio playback; no build step otherwise.
 
 ```sh
 open index.html              # macOS
@@ -19,11 +20,10 @@ start index.html             # Windows
 Drag MP3 files anywhere on the page (or click "Choose MP3 files" on the welcome
 card / the "Drop .mp3 files anywhere" hint in the header).
 
-Playback runs through `decodeAudioData` → `AudioBufferSourceNode` rather than a
-`<audio>` element. Some VBR MP3s wrapped in `blob:` URLs cause the MediaElement
-path to mis-report duration and truncate playback after a few seconds; decoding
-to an `AudioBuffer` makes the duration the actual sample count, so playback
-can't be cut short.
+Playback is handled by [Howler.js](https://howlerjs.com/) on the Web Audio
+path (`html5: false`). Howler manages the AudioContext lifecycle, mobile / iOS
+audio unlock, and recovery from cross-tab audio focus interruptions, so the
+app doesn't need to maintain those workarounds itself.
 
 ### Controls
 
@@ -104,11 +104,15 @@ touch). Any movement or keypress brings them back.
 
 ## Implementation notes
 
-Everything is in `index.html` — vanilla JS modules, no build, no deps.
+Everything (apart from the Howler.js CDN load) is in `index.html` — vanilla JS
+modules, no build, no other deps.
 
 - A 2D fragment shader pipeline driven by an FFT spectrum texture (256 bins,
-  uploaded each frame from `AnalyserNode`).
-- Per-frame uniforms include `uBass`, `uMid`, `uHi`, `uLevel` (smoothed
+  uploaded each frame from a Web Audio `AnalyserNode`).
+- The analyser is spliced between `Howler.masterGain` and the `AudioContext`
+  destination once, so the visualizer reads frequency data from whatever
+  Howler is playing without each track needing its own wiring.
+- Per-frame shader uniforms include `uBass`, `uMid`, `uHi`, `uLevel` (smoothed
   bands), plus `uBeat` (transient envelope), `uBeatT` (seconds since last
   beat) and `uPulse` — a velocity-based clock that surges on beats, used by
   effects that want motion locked to the beat rather than wall-clock time.
@@ -117,17 +121,13 @@ Everything is in `index.html` — vanilla JS modules, no build, no deps.
   `uPhotoT / uSlideDur / uKenSeed` driving the auto-pan. The render loop
   binds image textures to `TEXTURE1 / TEXTURE2` and restores `TEXTURE0` for
   the spectrum sampler so the other shaders keep working unchanged.
-- Track Blobs are re-fetched from IndexedDB at play time before
-  `decodeAudioData`, because Safari/WebKit invalidates IDB-backed `Blob`
-  references across page loads.
-- If another browser tab takes audio focus, the AudioContext can stick on
-  `'interrupted'` / `'closed'` and `resume()` no longer lifts it. On the next
-  user click the player synchronously closes the wedged context and creates
-  a fresh one inside the same gesture stack, so the follow-up `resume()` can
-  bring it to `'running'` before the next `BufferSource` starts.
+- Track Blobs are re-fetched from IndexedDB at play time before each Howl is
+  created, because Safari/WebKit invalidates IDB-backed `Blob` references
+  across page loads.
 
 ## Credits
 
+- [Howler.js](https://howlerjs.com/) — MIT.
 - [Star Nest](https://www.shadertoy.com/view/XlfGRj) by Pablo Román Andrioli
   ("Kali") — MIT.
 - [Plasma Globe](https://www.shadertoy.com/view/XsjXRm) by nimitz — CC BY-NC-SA.
