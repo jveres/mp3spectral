@@ -120,6 +120,11 @@ Everything is in `index.html` — vanilla JS modules, no build, no deps.
 - Track Blobs are re-fetched from IndexedDB at play time before
   `decodeAudioData`, because Safari/WebKit invalidates IDB-backed `Blob`
   references across page loads.
+- If another browser tab takes audio focus, the AudioContext can stick on
+  `'interrupted'` / `'closed'` and `resume()` no longer lifts it. On the next
+  user click the player synchronously closes the wedged context and creates
+  a fresh one inside the same gesture stack, so the follow-up `resume()` can
+  bring it to `'running'` before the next `BufferSource` starts.
 
 ## Credits
 
