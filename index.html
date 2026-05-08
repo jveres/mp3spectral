@@ -1235,6 +1235,31 @@ const Player = (() => {
     setVolume(v) { volume = v; if (gain) gain.gain.value = v; },
     resumeCtx()  { ensure(); ctx.resume(); },
 
+    // Tear down a wedged AudioContext (state stuck on suspended/interrupted/
+    // closed) and create a fresh one. Caller must reload + restart playback
+    // since AudioBuffers don't carry across contexts.
+    async resetCtx() {
+      killSource();
+      const old = ctx;
+      ctx = null; analyser = null; gain = null;
+      buffer = null; pausedAt = 0; paused = true;
+      if (old) { try { await old.close(); } catch {} }
+      ensure();
+    },
+
+    // Make sure the context is in 'running' state. Try resume first; if the
+    // browser refuses to resume an interrupted context (iOS / cross-tab audio
+    // focus), fall back to resetCtx and report that the buffer was dropped so
+    // the caller knows it needs to reload.
+    async ensureRunning() {
+      if (!ctx) { ensure(); }
+      if (ctx.state === 'running') return { reset: false };
+      try { await ctx.resume(); } catch {}
+      if (ctx.state === 'running') return { reset: false };
+      await this.resetCtx();
+      return { reset: true };
+    },
+
     async loadBlob(blob) {
       ensure();
       const id = ++loadGen;
@@ -1475,7 +1500,7 @@ async function playIndex(i) {
   const wasDifferent = current !== i;
   current = i;
   const t = tracks[i];
-  Player.resumeCtx();
+  await Player.ensureRunning();
   nowEl.textContent = t.name;
   if (autoSwitchFx && wasDifferent) {
     let next = curEffect;
@@ -1513,13 +1538,15 @@ async function playIndex(i) {
   Player.play();
 }
 
-function togglePlay() {
+async function togglePlay() {
   if (current === -1) {
     if (tracks.length) playIndex(0);
     return;
   }
-  Player.resumeCtx();
-  if (!Player.hasBuffer) {
+  const res = await Player.ensureRunning();
+  // If the context had to be rebuilt the AudioBuffer is gone — re-decode
+  // from scratch by re-issuing playIndex on the current track.
+  if (res.reset || !Player.hasBuffer) {
     playIndex(current);
     return;
   }
@@ -1725,10 +1752,10 @@ document.addEventListener('webkitfullscreenchange', syncFsIcon);
 // would create a BufferSource that plays silently.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    try { Player.resumeCtx(); } catch {}
+    Player.ensureRunning().catch(() => {});
   }
 });
-window.addEventListener('focus', () => { try { Player.resumeCtx(); } catch {} });
+window.addEventListener('focus', () => { Player.ensureRunning().catch(() => {}); });
 
 // Keyboard
 window.addEventListener('keydown', (e) => {
