@@ -1234,6 +1234,20 @@ const Player = (() => {
     set onEnded(fn)   { onEnded = fn; },
     setVolume(v) { volume = v; if (gain) gain.gain.value = v; },
     resumeCtx()  { ensure(); ctx.resume(); },
+    get state() { return ctx ? ctx.state : 'none'; },
+
+    // Synchronously dispose a wedged AudioContext and create a fresh one.
+    // Must be called inside a user-gesture stack (e.g. a click handler) so
+    // the immediately-following resumeCtx can actually bring the new ctx to
+    // 'running'. ctx.close() returns a Promise but the close is initiated
+    // synchronously; we ignore it.
+    hardResetSync() {
+      killSource();
+      if (ctx) { try { ctx.close(); } catch {} }
+      ctx = null; analyser = null; gain = null;
+      buffer = null; pausedAt = 0; paused = true;
+      ensure();
+    },
 
     // Tear down a wedged AudioContext (state stuck on suspended/interrupted/
     // closed) and create a fresh one. Caller must reload + restart playback
@@ -1500,7 +1514,13 @@ async function playIndex(i) {
   const wasDifferent = current !== i;
   current = i;
   const t = tracks[i];
-  await Player.ensureRunning();
+  // If a previous ctx got wedged (another tab grabbed audio focus, OS
+  // interrupted us), recreate it synchronously inside the click stack so
+  // the immediately-following resumeCtx can lift it to 'running'.
+  if (Player.state === 'interrupted' || Player.state === 'closed') {
+    Player.hardResetSync();
+  }
+  Player.resumeCtx();
   nowEl.textContent = t.name;
   if (autoSwitchFx && wasDifferent) {
     let next = curEffect;
@@ -1538,15 +1558,18 @@ async function playIndex(i) {
   Player.play();
 }
 
-async function togglePlay() {
+function togglePlay() {
   if (current === -1) {
     if (tracks.length) playIndex(0);
     return;
   }
-  const res = await Player.ensureRunning();
-  // If the context had to be rebuilt the AudioBuffer is gone — re-decode
-  // from scratch by re-issuing playIndex on the current track.
-  if (res.reset || !Player.hasBuffer) {
+  if (Player.state === 'interrupted' || Player.state === 'closed') {
+    Player.hardResetSync();
+    playIndex(current);
+    return;
+  }
+  Player.resumeCtx();
+  if (!Player.hasBuffer) {
     playIndex(current);
     return;
   }
@@ -1750,12 +1773,13 @@ document.addEventListener('webkitfullscreenchange', syncFsIcon);
 // on iOS/macOS especially) suspend or 'interrupt' a context when another tab
 // takes audio focus; without this, returning to our tab and pressing play
 // would create a BufferSource that plays silently.
+// Resume on tab return — synchronous resume only (no async/reset chain),
+// since those can fight with the user-gesture stack on the next click.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    Player.ensureRunning().catch(() => {});
+    try { Player.resumeCtx(); } catch {}
   }
 });
-window.addEventListener('focus', () => { Player.ensureRunning().catch(() => {}); });
 
 // Keyboard
 window.addEventListener('keydown', (e) => {
