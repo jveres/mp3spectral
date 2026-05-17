@@ -983,7 +983,7 @@ async function initTrails(){
     dpr: 1.5, exposure: 3.6505, brightness: 4.0131,
     bloomStrength: 0.2025, bloomRadius: 0.294, bloomThreshold: 0.0,
     speedMultiplier: 0.1, linesCount: 100,
-    dotDensity: 70, dotSize: 0.25, dotSpeed: 1.5, blurStrength: 3.5,
+    dotDensity: 18, dotSize: 0.20, dotSpeed: 1.35, blurStrength: 3.5,
     arcRadius: 10.0, bendStartZ: -150.0, floorLength: 132.75, wallHeight: 200.0,
     color0: '#004c94', color1: '#2e89ff', color2: '#003994',
     color3: '#004bad', color4: '#ff5900'
@@ -1082,6 +1082,118 @@ async function initTrails(){
   floorMesh.renderOrder = 1;
   scene.add(floorMesh);
 
+  const skyMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uTime: { value: 0 },
+      uRhythm: { value: 0 },
+      uBass: { value: 0 },
+      uHi: { value: 0 },
+      uAspect: { value: window.innerWidth / Math.max(1, window.innerHeight) }
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main(){
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      precision highp float;
+      varying vec2 vUv;
+      uniform float uTime;
+      uniform float uRhythm;
+      uniform float uBass;
+      uniform float uHi;
+      uniform float uAspect;
+
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+      float noise(vec2 p){
+        vec2 i = floor(p), f = fract(p);
+        float a = hash(i), b = hash(i + vec2(1.0, 0.0));
+        float c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+        vec2 u = f*f*(3.0 - 2.0*f);
+        return mix(a,b,u.x) + (c-a)*u.y*(1.0-u.x) + (d-b)*u.x*u.y;
+      }
+      float fbm(vec2 p){
+        float v = 0.0, a = 0.5;
+        for (int i = 0; i < 5; i++){
+          v += a * noise(p);
+          p = p * 2.03 + 17.7;
+          a *= 0.5;
+        }
+        return v;
+      }
+      mat2 rot(float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c); }
+
+      void main(){
+        vec2 uv = vUv;
+        vec2 p = (uv - 0.5) * vec2(uAspect, 1.0);
+        float upper = smoothstep(0.24, 0.48, uv.y);
+        float horizonFade = 1.0 - smoothstep(0.18, 0.36, abs(uv.y - 0.30));
+        float skyMask = upper;
+
+        vec2 q = p * 1.18 + vec2(uTime * 0.030, -uTime * 0.010);
+        vec2 fold = q;
+        float nest = 0.0;
+        for (int i = 0; i < 5; i++){
+          fold = abs(fold) / max(dot(fold, fold), 0.28) - vec2(0.64, 0.48);
+          fold *= rot(0.11 + float(i) * 0.27);
+          nest += exp(-length(fold) * (2.8 + float(i) * 0.55)) * 0.18;
+        }
+        float dust = smoothstep(0.36, 0.90, fbm(q * 0.92 + nest * 0.08));
+        float milkyBand = exp(-abs(p.y * 1.25 + p.x * 0.34 - 0.10) * 2.45);
+        float farGlow = exp(-length((p - vec2(-0.18, 0.22)) * vec2(0.72, 1.4)) * 1.55);
+        dust = max(dust * 0.62, milkyBand * (0.26 + dust * 0.28));
+        dust *= smoothstep(1.65, 0.0, length(p)) * skyMask;
+
+        vec2 grid = uv * vec2(165.0 * uAspect, 92.0);
+        vec2 cell = floor(grid);
+        vec2 local = fract(grid) - 0.5;
+        float h = hash(cell);
+        float size = mix(110.0, 360.0, hash(cell + 19.7));
+        float star = exp(-dot(local, local) * size) * smoothstep(0.982, 0.9994, h);
+        float twinkle = 0.82 + 0.18 * sin(uTime * (0.20 + hash(cell + 4.0) * 0.42) + h * 6.28318);
+        star *= twinkle * skyMask;
+        float tintPick = hash(cell + 31.0);
+        vec3 blueTint = vec3(0.18, 0.48, 1.00);
+        vec3 cyanTint = vec3(0.10, 0.95, 0.92);
+        vec3 violetTint = vec3(0.82, 0.38, 1.00);
+        vec3 warmTint = vec3(1.00, 0.50, 0.18);
+        vec3 starTint = blueTint;
+        if (tintPick > 0.30) starTint = cyanTint;
+        if (tintPick > 0.58) starTint = violetTint;
+        if (tintPick > 0.84) starTint = warmTint;
+
+        vec2 grid2 = uv * vec2(72.0 * uAspect, 42.0);
+        vec2 cell2 = floor(grid2);
+        vec2 local2 = fract(grid2) - 0.5;
+        float h2 = hash(cell2 + 73.4);
+        float brightStar = exp(-dot(local2, local2) * 210.0) * smoothstep(0.992, 0.9996, h2) * skyMask;
+        float brightTintPick = hash(cell2 + 111.0);
+        vec3 brightTint = brightTintPick < 0.55 ? vec3(0.22, 0.70, 1.00) : vec3(1.00, 0.48, 0.20);
+
+        vec3 col = vec3(0.0);
+        col += dust * vec3(0.050, 0.105, 0.285) * (0.82 + uBass * 0.06);
+        col += farGlow * skyMask * vec3(0.030, 0.060, 0.180) * (0.55 + uRhythm * 0.05);
+        col += nest * skyMask * vec3(0.024, 0.055, 0.165) * (0.62 + uRhythm * 0.08);
+        col += milkyBand * dust * vec3(0.020, 0.085, 0.240) * (0.52 + uBass * 0.04);
+        col += star * starTint * (0.78 + uHi * 0.16);
+        col += brightStar * brightTint * (0.88 + uRhythm * 0.06);
+        col *= 1.0 - horizonFade * 0.55;
+
+        float alpha = clamp((dust * 0.44 + farGlow * 0.18 + nest * 0.22 + star * 0.72 + brightStar * 0.95) * skyMask, 0.0, 0.86);
+        gl_FragColor = vec4(col, alpha);
+      }`
+  });
+  const skyPlane = new THREE.Mesh(new THREE.PlaneGeometry(1100, 520, 1, 1), skyMat);
+  skyPlane.position.set(0, 82, -245);
+  skyPlane.renderOrder = -20;
+  scene.add(skyPlane);
+
   const vertexShader = `
     varying vec2 vUv; varying vec3 vNormal; varying vec3 vViewPosition;
     void main(){
@@ -1097,26 +1209,31 @@ async function initTrails(){
     uniform float uSpeed; uniform float uOffset; uniform float uTailLength;
     uniform float uIntensityMultiplier; uniform float uBendUv; uniform float uIsReflection;
     uniform float uDotDensity; uniform float uDotSize; uniform float uDotSpeed;
-    uniform float uBrightness; uniform float uDirection;
+    uniform float uBrightness; uniform float uDirection; uniform float uRhythm; uniform float uBeat;
     float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     void main(){
       float t = fract(uTime * uSpeed * uDirection + uOffset);
       float dist = fract((t - vUv.x) * uDirection + 1.0);
-      float baseAlpha = smoothstep(uTailLength, 0.0, dist);
+      float reactiveTail = clamp(uTailLength * (0.82 + uRhythm * 0.35 + uBeat * 0.08), 0.12, 0.82);
+      float baseAlpha = smoothstep(reactiveTail, 0.0, dist);
       baseAlpha = pow(max(0.0, baseAlpha), 1.2);
       vec3 viewDir = normalize(vViewPosition);
       float fresnel = abs(dot(normalize(vNormal), viewDir));
       float edgeSoftness = smoothstep(0.0, 0.02, fresnel);
       baseAlpha *= edgeSoftness;
-      float core = pow(max(0.0, baseAlpha), 3.0) * 1.5;
+      float headPulse = smoothstep(0.08 + uRhythm * 0.03, 0.0, dist) * (uRhythm * 0.28 + uBeat * 0.10) * edgeSoftness;
+      baseAlpha = clamp(baseAlpha + headPulse, 0.0, 1.25);
+      float core = pow(max(0.0, baseAlpha), 3.0) * (1.35 + uRhythm * 0.70);
       float movingUV = vUv.x - (uTime * uSpeed * uDotSpeed * uDirection) - uOffset;
       float signalPos = movingUV * uDotDensity;
       float dotId = floor(signalPos);
       float dotLocal = fract(signalPos);
-      float distToCenter = length(vec2((dotLocal - 0.5) * 2.0, (fract(vUv.y + 0.5) - 0.5) * 6.0));
-      float dotShape = 1.0 - smoothstep(0.0, max(0.001, uDotSize), distToCenter);
-      float dotFinal = dotShape * step(0.6, hash(vec2(dotId, uOffset))) *
-                       (sin(uTime * 4.0 + hash(vec2(dotId)) * 6.28) * 0.3 + 0.7) * baseAlpha;
+      float along = abs(dotLocal - 0.5) * 2.0;
+      float around = 0.42 + 0.58 * pow(abs(sin(vUv.y * 6.28318)), 0.35);
+      float dotShape = (1.0 - smoothstep(0.0, max(0.001, uDotSize), along)) * around;
+      float dotFinal = dotShape * step(0.80, hash(vec2(dotId, uOffset))) *
+                       (sin(uTime * 4.0 + hash(vec2(dotId)) * 6.28) * 0.3 + 0.7) *
+                       (1.0 + uRhythm * 0.70 + uBeat * 0.18) * baseAlpha;
       if (uIsReflection > 0.5){
         float refFade = 1.0 - smoothstep(uBendUv - 0.015, uBendUv, vUv.x);
         baseAlpha *= refFade;
@@ -1126,9 +1243,9 @@ async function initTrails(){
         core *= 0.3;
       }
       vec3 trailColor = uColor * (baseAlpha + core * 1.5) * uIntensityMultiplier * uBrightness;
-      vec3 rgb = trailColor / max(1.0 - clamp(dotFinal * 1.8, 0.0, 0.95), 0.001) +
-                 uColor * dotFinal * 2.5 * uIntensityMultiplier * uBrightness;
-      gl_FragColor = vec4(rgb, (baseAlpha + dotFinal) * uIntensityMultiplier);
+      vec3 rgb = trailColor / max(1.0 - clamp(dotFinal * 1.30, 0.0, 0.88), 0.001) +
+                 uColor * dotFinal * 2.10 * uIntensityMultiplier * uBrightness;
+      gl_FragColor = vec4(rgb, (baseAlpha + dotFinal * 0.90) * uIntensityMultiplier);
     }`;
 
   const group = new THREE.Group();
@@ -1162,7 +1279,9 @@ async function initTrails(){
       uDotSize: { value: cfg.dotSize },
       uDotSpeed: { value: cfg.dotSpeed },
       uBrightness: { value: cfg.brightness },
-      uDirection: { value: 1.0 }
+      uDirection: { value: 1.0 },
+      uRhythm: { value: 0.0 },
+      uBeat: { value: 0.0 }
     };
     const material = new THREE.ShaderMaterial({ vertexShader, fragmentShader, uniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
     const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
@@ -1240,6 +1359,20 @@ async function initTrails(){
   }
   let envBeat = 0;
   let lastBeatVal = 0;
+  let streamRhythm = 0;
+  let hitPulse = 0;
+  let speedPulse = 0;
+  let speedGroove = 0;
+  let accentPulse = 0;
+  let rhythmClock = 0;
+  let skyFlowTime = 0;
+  let skyEnergy = 0;
+  const cameraHome = {
+    y: camera.position.y,
+    z: camera.position.z,
+    lookY: 20,
+    lookZ: -50
+  };
 
   // Reactive palette cycling.
   const palettes = [
@@ -1282,18 +1415,49 @@ async function initTrails(){
   }
 
   trailsApi = {
-    render(dt, bass, mid, hi, beat){
-      bloomPass.strength = cfg.bloomStrength + envBeat * 0.55;
-
+    prime(){
+      envBeat = Math.max(envBeat, 0.26);
+      hitPulse = Math.max(hitPulse, 0.28);
+      speedPulse = Math.max(speedPulse, 0.34);
+      speedGroove = Math.max(speedGroove, 0.14);
+      streamRhythm = Math.max(streamRhythm, 0.22);
+      lastBeatVal = 0;
+    },
+    render(dt, bass, mid, hi, beat, hit = 0, accent = 0, speed = 0){
       // beat: instant attack, fast release
       if (beat > envBeat) envBeat = beat;
       else envBeat *= Math.pow(0.05, dt);
-      const beatRising = Math.max(0, beat - lastBeatVal);
+      const beatRising = Math.max(hit, beat - lastBeatVal, 0);
+      hitPulse = Math.max(hitPulse * Math.pow(0.00008, dt), beatRising);
+      accentPulse = Math.max(accentPulse * Math.pow(0.018, dt), accent);
       lastBeatVal = beat;
+      const overall = (bass + mid + hi) / 3;
+      streamRhythm = Math.max(streamRhythm * Math.pow(0.0009, dt), Math.min(1, envBeat * 0.70 + hitPulse * 1.25));
+      const speedHit = Math.min(1, Math.max(speed, beatRising));
+      speedPulse = Math.max(speedPulse * Math.pow(0.0000007, dt), speedHit);
+      const grooveTarget = Math.min(1, speedPulse * 0.34);
+      const kGroove = grooveTarget > speedGroove ? Math.min(1, dt * 16.0) : Math.min(1, dt * 7.5);
+      speedGroove += (grooveTarget - speedGroove) * kGroove;
+      const speedDrive = Math.min(1, speedPulse * 0.92 + speedGroove * 0.18);
+      rhythmClock += dt * (0.8 + streamRhythm * 4.6) + beatRising * 1.65;
+      skyFlowTime += dt * (0.12 + overall * 0.03);
+      skyEnergy += (Math.min(1, overall * 1.5 + streamRhythm * 0.18 + accentPulse * 0.14) - skyEnergy) * Math.min(1, dt * 1.8);
+      const globalPulse = Math.min(1, streamRhythm * 0.75 + overall * 0.16);
+      bloomPass.strength = cfg.bloomStrength + globalPulse * 0.22 + hi * 0.02;
+      blurPass.uniforms.blurStrength.value = cfg.blurStrength * (0.82 + streamRhythm * 0.12 + hi * 0.08);
+      floorMat.opacity = Math.min(0.92, 0.78 + bass * 0.05 + streamRhythm * 0.05);
+      camera.position.y = cameraHome.y + streamRhythm * 1.0 + bass * 0.8;
+      camera.position.z = cameraHome.z - streamRhythm * 3.2 - bass * 2.0;
+      camera.lookAt(0, cameraHome.lookY + streamRhythm * 0.7, cameraHome.lookZ);
+      skyMat.uniforms.uTime.value = skyFlowTime;
+      skyMat.uniforms.uRhythm.value = skyEnergy;
+      skyMat.uniforms.uBass.value = bass * 0.35;
+      skyMat.uniforms.uHi.value = hi;
+      skyMat.uniforms.uAspect.value = window.innerWidth / Math.max(1, window.innerHeight);
+      skyPlane.position.y = 82;
 
       // palette phase: slow drift + faster sweep when music is loud, +kicks on beats
-      const overall = (bass + mid + hi) / 3;
-      palettePhase += dt * (0.008 + overall * 0.04) + beatRising * 0.012;
+      palettePhase += dt * (0.008 + overall * 0.04 + accentPulse * 0.075) + beatRising * 0.018;
       applyPalette(palettePhase);
 
       const an = Player.analyser;
@@ -1304,11 +1468,11 @@ async function initTrails(){
         an.getByteFrequencyData(freqData);
         const N = freqData.length;
 
-        // Velocity tracks the per-trail bin level closely in BOTH directions —
-        // bin goes loud, that trail surges; bin goes quiet, that trail brakes.
-        const kAttack  = Math.min(1, dt * 28.0);   // ~35ms attack
-        const kRelease = Math.min(1, dt * 18.0);   // ~55ms release (was ~550ms)
-        const kSpeed   = Math.min(1, dt * 25.0);   // ~40ms — velocity hugs the level
+        // Bins only color the texture; one global rhythm envelope drives motion.
+        const kAttack  = Math.min(1, dt * 18.0);
+        const kRelease = Math.min(1, dt * 9.0);
+        const kSpeedUp = Math.min(1, dt * 64.0);
+        const kSpeedDn = Math.min(1, dt * 24.0);
 
         for (let i = 0; i < trailObjects.length; i++){
           const idx = Math.min(N - 1, Math.floor(trailBins[i] * N));
@@ -1317,24 +1481,39 @@ async function initTrails(){
           trailLevels[i] = raw > prev ? prev + (raw - prev) * kAttack
                                       : prev + (raw - prev) * kRelease;
           const lv = trailLevels[i];
-          const trans = Math.max(0, raw - prev);
+          const rhythm = streamRhythm * (0.94 + Math.sin(i * 0.57 + rhythmClock) * 0.06);
+          const hitAccent = hitPulse * (0.94 + Math.sin(i * 0.73 + rhythmClock * 0.7) * 0.06);
+          const speedAccent = speedDrive * (0.92 + Math.sin(i * 0.61 + rhythmClock * 0.9) * 0.08);
+          const accentWeight = 0.45 + Math.max(0, Math.min(1, (trailBins[i] - 0.10) / 0.48)) * 0.55;
+          const noteAccent = accentPulse * accentWeight * (0.72 + lv * 0.62);
+          const mainU = trailMaterials[i*2];
+          const refU = trailMaterials[i*2+1];
 
-          trailMaterials[i*2  ].uBrightness.value = cfg.brightness * (0.35 + lv*1.8 + envBeat*0.3);
-          trailMaterials[i*2+1].uBrightness.value = cfg.brightness * (0.20 + lv*0.9 + envBeat*0.15);
-          trailMaterials[i*2  ].uIntensityMultiplier.value = 1.0 + envBeat*0.4 + lv*0.3;
-          trailMaterials[i*2+1].uIntensityMultiplier.value = 0.4 + envBeat*0.2 + lv*0.15;
+          mainU.uRhythm.value = rhythm + noteAccent * 0.24;
+          refU.uRhythm.value = rhythm * 0.40 + noteAccent * 0.10;
+          mainU.uBeat.value = hitAccent + noteAccent * 0.18;
+          refU.uBeat.value = hitAccent * 0.30 + noteAccent * 0.07;
+          mainU.uDotSize.value = cfg.dotSize * (0.92 + rhythm * 0.18 + hitAccent * 0.20 + noteAccent * 0.18 + hi * 0.08);
+          refU.uDotSize.value = cfg.dotSize * (0.62 + rhythm * 0.10 + noteAccent * 0.07);
+          mainU.uDotSpeed.value = cfg.dotSpeed * (0.70 + rhythm * 0.30 + speedAccent * 1.65 + hitAccent * 0.30 + noteAccent * 0.42);
+          refU.uDotSpeed.value = cfg.dotSpeed * (0.62 + rhythm * 0.18 + speedAccent * 0.55 + noteAccent * 0.14);
+          mainU.uBrightness.value = cfg.brightness * (0.30 + lv*0.90 + rhythm*0.24 + hitAccent*0.18 + noteAccent*0.16);
+          refU.uBrightness.value = cfg.brightness * (0.16 + lv*0.40 + rhythm*0.10 + hitAccent*0.06 + noteAccent*0.06);
+          mainU.uIntensityMultiplier.value = 0.82 + hitAccent*0.18 + noteAccent*0.10 + lv*0.20 + rhythm*0.16;
+          refU.uIntensityMultiplier.value = 0.34 + hitAccent*0.07 + noteAccent*0.04 + lv*0.09 + rhythm*0.06;
 
-          // Per-trail speed: silence drifts (~0.25×), peak ~5×. Steep curve so soft
-          // bins still cause a noticeable surge.
+          // Per-trail speed surges on shared beat hits; bin level only adds texture.
           const baseSpeed = trailObjects[i].baseSpeed;
           const lvShaped  = Math.pow(lv, 0.35);
-          const targetSpeed = baseSpeed * (0.25 + lvShaped * 4.5);
+          const overallShaped = Math.pow(overall, 0.45);
+          const minFlowSpeed = baseSpeed * 0.13;
+          const targetSpeed = baseSpeed * (0.070 + overallShaped * 0.14 + rhythm * 0.62 + speedAccent * 4.90 + hitAccent * 0.28 + noteAccent * 0.16 + lvShaped * 0.04);
+          const kSpeed = targetSpeed > trailSpeeds[i] ? kSpeedUp : kSpeedDn;
           trailSpeeds[i] += (targetSpeed - trailSpeeds[i]) * kSpeed;
-          trailPhases[i] += dt * Math.max(0, trailSpeeds[i]) * 0.07;
-          // Per-trail transient kick — bigger jolt for clearer beat punches
-          trailPhases[i] += trans * 0.06;
-          trailMaterials[i*2  ].uTime.value = trailPhases[i];
-          trailMaterials[i*2+1].uTime.value = trailPhases[i];
+          trailPhases[i] += dt * Math.max(minFlowSpeed, trailSpeeds[i]) * 0.052;
+          trailPhases[i] += speedHit * (0.026 + overall * 0.006) + beatRising * 0.010 + noteAccent * dt * 0.05;
+          mainU.uTime.value = trailPhases[i];
+          refU.uTime.value = trailPhases[i];
         }
       }
       composer.render();
@@ -1694,7 +1873,7 @@ const Player = (() => {
   };
 })();
 
-let freqData = null, specBytes = new Uint8Array(256);
+let freqData = null, timeData = null, specBytes = new Uint8Array(256);
 
 // ---------- Playlist ----------
 const playlistEl = document.getElementById('tracks');
@@ -1760,6 +1939,9 @@ const idb = (() => {
 })();
 let current = -1;
 let seeking = false;
+let beatMapTrack = -1;
+let beatMapCursor = 0;
+let beatMapLastTime = 0;
 
 function fmtTime(s) {
   if (!isFinite(s) || s < 0) return '0:00';
@@ -1799,6 +1981,173 @@ function renderPlaylist() {
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function lowerBound(arr, value) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid] < value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function decodeAudioBuffer(blob) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx : (AC ? new AC() : null);
+  if (!ctx) return Promise.resolve(null);
+  return blob.arrayBuffer().then(buf => new Promise((resolve) => {
+    const copy = buf.slice(0);
+    const done = (audioBuffer) => resolve(audioBuffer || null);
+    const fail = () => resolve(null);
+    try {
+      const p = ctx.decodeAudioData(copy, done, fail);
+      if (p && typeof p.then === 'function') p.then(done, fail);
+    } catch {
+      resolve(null);
+    }
+  }));
+}
+
+function estimateBeatMap(audioBuffer) {
+  if (!audioBuffer || !audioBuffer.length || !audioBuffer.sampleRate) return null;
+  const sr = audioBuffer.sampleRate;
+  const ch0 = audioBuffer.getChannelData(0);
+  const ch1 = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : null;
+  const frameSize = 1024;
+  const hop = 512;
+  const frames = Math.max(0, Math.floor((audioBuffer.length - frameSize) / hop));
+  if (frames < 64) return null;
+
+  const onset = new Float32Array(frames);
+  let slow = 0;
+  let mean = 0;
+  for (let f = 0; f < frames; f++) {
+    const start = f * hop;
+    let sum = 0, count = 0;
+    for (let j = 0; j < frameSize; j += 4) {
+      const idx = start + j;
+      let v = ch0[idx] || 0;
+      if (ch1) v = (v + (ch1[idx] || 0)) * 0.5;
+      sum += v * v;
+      count++;
+    }
+    const rms = Math.sqrt(sum / Math.max(1, count));
+    slow += (rms - slow) * 0.012;
+    const o = Math.max(0, rms - slow);
+    onset[f] = o;
+    mean += o;
+  }
+  mean /= frames;
+  let variance = 0;
+  for (let i = 0; i < frames; i++) variance += (onset[i] - mean) * (onset[i] - mean);
+  const dev = Math.sqrt(variance / frames);
+  const threshold = Math.max(mean + dev * 0.85, 0.004);
+  const peaks = [];
+  const minPeakGap = 0.19;
+  for (let i = 2; i < frames - 2; i++) {
+    const v = onset[i];
+    if (v < threshold || v < onset[i - 1] || v < onset[i + 1]) continue;
+    const time = i * hop / sr;
+    const score = v;
+    const last = peaks[peaks.length - 1];
+    if (last && time - last.time < minPeakGap) {
+      if (score > last.score) {
+        last.time = time;
+        last.score = score;
+      }
+    } else {
+      peaks.push({ time, score });
+    }
+  }
+  if (peaks.length < 8) return null;
+
+  const minP = 0.30, maxP = 0.82, step = 0.01;
+  const bins = new Float32Array(Math.floor((maxP - minP) / step) + 1);
+  for (let i = 0; i < peaks.length; i++) {
+    for (let j = i + 1; j < peaks.length; j++) {
+      const d = peaks[j].time - peaks[i].time;
+      if (d > 2.4) break;
+      for (let div = 1; div <= 4; div++) {
+        const p = d / div;
+        if (p >= minP && p <= maxP) {
+          const bi = Math.round((p - minP) / step);
+          bins[bi] += Math.sqrt(peaks[i].score * peaks[j].score) / div;
+        }
+      }
+    }
+  }
+  let bestBin = 0, bestScore = 0;
+  for (let i = 0; i < bins.length; i++) {
+    const score = bins[i];
+    if (score > bestScore) {
+      bestScore = score;
+      bestBin = i;
+    }
+  }
+  if (bestScore <= 0) return null;
+  const period = minP + bestBin * step;
+  const topPeaks = peaks.slice().sort((a, b) => b.score - a.score).slice(0, 64);
+  const tol = Math.min(0.085, period * 0.18);
+  let bestOffset = topPeaks[0].time % period;
+  let bestOffsetScore = -1;
+  for (const seed of topPeaks) {
+    const offset = seed.time % period;
+    let score = 0;
+    for (const p of peaks) {
+      let d = Math.abs(((p.time - offset + period * 0.5) % period) - period * 0.5);
+      if (d < tol) score += p.score * (1 - d / tol);
+    }
+    if (score > bestOffsetScore) {
+      bestOffsetScore = score;
+      bestOffset = offset;
+    }
+  }
+
+  const beats = [];
+  let t = bestOffset;
+  while (t > 0.05) t -= period;
+  const dur = audioBuffer.duration || (audioBuffer.length / sr);
+  for (; t < dur + period; t += period) {
+    if (t < 0) continue;
+    beats.push(t);
+  }
+  const confidence = Math.max(0, Math.min(1, bestOffsetScore / Math.max(0.001, peaks.length * threshold * 1.8)));
+  return beats.length > 4 ? { beats, period, confidence } : null;
+}
+
+function ensureBeatMap(track, blob) {
+  if (track.beatMap || track.beatMapPromise) return;
+  track.beatMapPromise = decodeAudioBuffer(blob)
+    .then(estimateBeatMap)
+    .then(map => { track.beatMap = map; return map; })
+    .catch(() => null);
+}
+
+function activeBeatMap() {
+  const track = tracks[current];
+  return track && track.beatMap && track.beatMap.beats && track.beatMap.beats.length > 4 ? track.beatMap : null;
+}
+
+function beatMapPhaseAt(currentTime) {
+  const map = activeBeatMap();
+  if (!map) return null;
+  const beats = map.beats;
+  const nextIndex = lowerBound(beats, currentTime);
+  const prevBeat = nextIndex > 0 ? beats[nextIndex - 1] : -Infinity;
+  const nextBeat = nextIndex < beats.length ? beats[nextIndex] : Infinity;
+  const nearest = (currentTime - prevBeat) <= (nextBeat - currentTime) ? prevBeat : nextBeat;
+  const distance = Math.abs(currentTime - nearest);
+  const period = map.period || 0.48;
+  const window = Math.min(0.18, Math.max(0.075, period * 0.30));
+  const closeness = Math.max(0, 1 - distance / window);
+  return {
+    closeness,
+    distance,
+    period,
+    confidence: map.confidence || 0.4
+  };
 }
 
 function addFiles(files) {
@@ -1857,6 +2206,14 @@ async function playIndex(i) {
   const wasDifferent = current !== i;
   current = i;
   const t = tracks[i];
+  if (wasDifferent) {
+    beatMapTrack = -1;
+    beatMapCursor = 0;
+    beatMapLastTime = 0;
+    beatT = 999;
+    beatEnv = 0;
+    beatConfidence = 0;
+  }
   // If a previous ctx got wedged (another tab grabbed audio focus, OS
   // interrupted us), recreate it synchronously inside the click stack so
   // the immediately-following resumeCtx can lift it to 'running'.
@@ -1887,6 +2244,7 @@ async function playIndex(i) {
     } catch (e) { /* fall back to in-memory blob */ }
   }
   if (current !== i) return;
+  ensureBeatMap(t, blob);
   // decode + play asynchronously (the only reliable way for VBR MP3 blobs)
   const dur = await Player.loadBlob(blob);
   if (current !== i) return; // user switched while decoding
@@ -1898,6 +2256,7 @@ async function playIndex(i) {
     renderPlaylist();
   }
   durEl.textContent = fmtTime(Player.duration);
+  primeTrackReactivity();
   Player.play();
 }
 
@@ -2138,7 +2497,12 @@ window.addEventListener('keydown', (e) => {
 
 // ---------- Render Loop ----------
 let smoothBass = 0, smoothMid = 0, smoothHi = 0, smoothLevel = 0;
-let prevBass = 0, fastBass = 0, beatEnv = 0, beatT = 999, pulseClock = 0, pulseVel = 0, lastFrameT = performance.now();
+let prevBass = 0, prevMid = 0, prevHi = 0, prevLevel = 0, fastBass = 0, fastMid = 0, fastHi = 0, fastLevel = 0;
+let rmsFast = 0, rmsSlow = 0;
+let melodyFast = 0, melodySlow = 0;
+let beatEnv = 0, beatT = 999, pulseClock = 0, pulseVel = 0, lastFrameT = performance.now();
+let beatSpecPrev = null, fluxSlow = 0, onsetAvg = 0, onsetDev = 0, drumAvg = 0, drumDev = 0, beatPeriod = 0.48, beatConfidence = 0;
+let startupBoost = 0, startupSeedFrames = 0;
 const start = performance.now();
 
 function downsampleSpec(src, dst) {
@@ -2153,6 +2517,30 @@ function downsampleSpec(src, dst) {
   }
 }
 
+function primeTrackReactivity() {
+  smoothBass = 0;
+  smoothMid = 0;
+  smoothHi = 0;
+  smoothLevel = 0;
+  prevBass = prevMid = prevHi = prevLevel = 0;
+  fastBass = fastMid = fastHi = fastLevel = 0;
+  rmsFast = rmsSlow = 0;
+  melodyFast = melodySlow = 0;
+  beatEnv = Math.max(beatEnv, 0.22);
+  beatT = 999;
+  pulseVel = Math.max(pulseVel, 1.8);
+  lastFrameT = performance.now();
+  beatSpecPrev = null;
+  fluxSlow = 0;
+  onsetAvg = 0.006;
+  onsetDev = 0.006;
+  drumAvg = 0.004;
+  drumDev = 0.004;
+  startupBoost = 1;
+  startupSeedFrames = 14;
+  if (trailsApi && typeof trailsApi.prime === 'function') trailsApi.prime();
+}
+
 function frame() {
   resize();
   // UI tick: progress bar + current-time label (replaces audio.timeupdate)
@@ -2162,13 +2550,28 @@ function frame() {
     curEl.textContent = fmtTime(ct);
     if (d > 0) seekEl.value = Math.round((ct / d) * 1000);
   }
-  let bass = 0, mid = 0, hi = 0, level = 0;
+  let bass = 0, mid = 0, hi = 0, level = 0, spectralFlux = 0, waveRms = 0;
+  let melodicPeak = 0, melodicEnergy = 0, melodicContrast = 0;
   const analyser = Player.analyser;
   if (analyser) {
+    const targetSmoothing = EFFECTS[curEffect].external === 'trails' ? 0.34 : 0.82;
+    if (Math.abs(analyser.smoothingTimeConstant - targetSmoothing) > 0.001) {
+      analyser.smoothingTimeConstant = targetSmoothing;
+    }
     if (!freqData || freqData.length !== analyser.frequencyBinCount) {
       freqData = new Uint8Array(analyser.frequencyBinCount);
     }
+    if (!timeData || timeData.length !== analyser.fftSize) {
+      timeData = new Uint8Array(analyser.fftSize);
+    }
     analyser.getByteFrequencyData(freqData);
+    analyser.getByteTimeDomainData(timeData);
+    let waveSum = 0;
+    for (let i = 0; i < timeData.length; i++){
+      const v = (timeData[i] - 128) / 128;
+      waveSum += v * v;
+    }
+    waveRms = Math.sqrt(waveSum / Math.max(1, timeData.length));
     const N = freqData.length;
     const bEnd = Math.floor(N * 0.08);
     const mEnd = Math.floor(N * 0.35);
@@ -2180,6 +2583,39 @@ function frame() {
     mid = (ms / ((mEnd - bEnd) * 255)) || 0;
     hi = (hs / ((N - mEnd) * 255)) || 0;
     level = (bass + mid + hi) / 3;
+    const guitarStart = Math.max(2, Math.floor(N * 0.016));
+    const guitarEnd = Math.max(guitarStart + 1, Math.min(N, Math.floor(N * 0.36)));
+    let gSum = 0, gCount = 0, gTop1 = 0, gTop2 = 0, gTop3 = 0, gTop4 = 0;
+    for (let i = guitarStart; i < guitarEnd; i++) {
+      const v = freqData[i] / 255;
+      gSum += v;
+      gCount++;
+      if (v > gTop1) {
+        gTop4 = gTop3; gTop3 = gTop2; gTop2 = gTop1; gTop1 = v;
+      } else if (v > gTop2) {
+        gTop4 = gTop3; gTop3 = gTop2; gTop2 = v;
+      } else if (v > gTop3) {
+        gTop4 = gTop3; gTop3 = v;
+      } else if (v > gTop4) {
+        gTop4 = v;
+      }
+    }
+    melodicEnergy = gSum / Math.max(1, gCount);
+    melodicPeak = (gTop1 + gTop2 + gTop3 + gTop4) * 0.25;
+    melodicContrast = Math.max(0, melodicPeak - melodicEnergy * 1.18);
+    if (!beatSpecPrev || beatSpecPrev.length !== N) {
+      beatSpecPrev = new Uint8Array(freqData);
+    } else {
+      const fluxEnd = Math.max(2, Math.floor(N * 0.55));
+      let flux = 0, fluxWeight = 0;
+      for (let i = 1; i < fluxEnd; i++){
+        const weight = i < bEnd ? 1.45 : (i < mEnd ? 0.95 : 0.42);
+        flux += Math.max(0, freqData[i] - beatSpecPrev[i]) * weight;
+        fluxWeight += weight;
+      }
+      spectralFlux = (flux / Math.max(1, fluxWeight)) / 255;
+      beatSpecPrev.set(freqData);
+    }
     downsampleSpec(freqData, specBytes);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, specTex);
@@ -2197,31 +2633,145 @@ function frame() {
   smoothMid += (mid - smoothMid) * k;
   smoothHi += (hi - smoothHi) * k;
   smoothLevel += (level - smoothLevel) * 0.10;
+  if (startupSeedFrames > 0 && (level > 0.004 || waveRms > 0.004)) {
+    const seedK = 0.72;
+    smoothBass += (bass - smoothBass) * seedK;
+    smoothMid += (mid - smoothMid) * seedK;
+    smoothHi += (hi - smoothHi) * seedK;
+    smoothLevel += (level - smoothLevel) * seedK;
+    fastBass += (bass - fastBass) * 0.86;
+    fastMid += (mid - fastMid) * 0.86;
+    fastHi += (hi - fastHi) * 0.86;
+    fastLevel += (level - fastLevel) * 0.86;
+    rmsFast += (waveRms - rmsFast) * 0.86;
+    rmsSlow += (waveRms - rmsSlow) * 0.54;
+    startupSeedFrames--;
+  }
 
   // beat / transient detection — use a fast follower so transients aren't smeared
   const nowT = performance.now();
   const dt = Math.min(0.1, (nowT - lastFrameT) / 1000);
   lastFrameT = nowT;
   fastBass += (bass - fastBass) * 0.55;
-  const transient = Math.max(0, fastBass - prevBass);
+  fastMid += (mid - fastMid) * 0.46;
+  fastHi += (hi - fastHi) * 0.50;
+  fastLevel += (level - fastLevel) * 0.52;
+  rmsFast += (waveRms - rmsFast) * 0.72;
+  rmsSlow += (waveRms - rmsSlow) * 0.035;
+  const bassTransient = Math.max(0, fastBass - prevBass);
+  const midTransient = Math.max(0, fastMid - prevMid);
+  const hiTransient = Math.max(0, fastHi - prevHi);
+  const levelTransient = Math.max(0, fastLevel - prevLevel);
+  const rmsTransient = Math.max(0, rmsFast - rmsSlow * 1.08);
+  fluxSlow += (spectralFlux - fluxSlow) * 0.045;
+  const fluxTransient = Math.max(0, spectralFlux - fluxSlow * 1.12);
+  const transient = Math.max(
+    bassTransient,
+    midTransient * 0.95,
+    levelTransient * 1.25,
+    rmsTransient * 1.85,
+    fluxTransient * 3.45
+  );
+  const drumTransient = Math.max(
+    bassTransient * 1.35,
+    levelTransient * 1.10,
+    rmsTransient * 1.75,
+    fluxTransient * 1.35
+  );
+  const beatThreshold = Math.max(0.009, onsetAvg + onsetDev * 1.22);
+  const drumThreshold = Math.max(0.0065, drumAvg + drumDev * 1.05);
+  const prevOnsetAvg = onsetAvg;
+  onsetAvg += (transient - onsetAvg) * 0.035;
+  onsetDev += (Math.abs(transient - prevOnsetAvg) - onsetDev) * 0.035;
+  const prevDrumAvg = drumAvg;
+  drumAvg += (drumTransient - drumAvg) * 0.035;
+  drumDev += (Math.abs(drumTransient - prevDrumAvg) - drumDev) * 0.035;
   prevBass = fastBass;
+  prevMid = fastMid;
+  prevHi = fastHi;
+  prevLevel = fastLevel;
   beatEnv = Math.max(beatEnv * Math.pow(0.0008, dt), 0);
   beatT += dt;
-  // also accept beats when level itself jumps (handles compressed / sustained bass tracks)
-  const energyBeat = transient > 0.025 && fastBass > 0.16;
-  if (energyBeat && beatT > 0.13) {
-    const strength = Math.min(1.0, transient * 18);
+  let beatHit = 0;
+  const melodicRaw = Math.max(0,
+    melodicPeak * 1.45 +
+    melodicContrast * 2.10 +
+    melodicEnergy * 0.82 +
+    mid * 0.48 +
+    hi * 0.18 -
+    bass * 0.26 -
+    0.026
+  );
+  melodyFast += (melodicRaw - melodyFast) * Math.min(1, dt * 7.0);
+  melodySlow += (melodicRaw - melodySlow) * Math.min(1, dt * 0.70);
+  const melodicSustain = Math.min(1,
+    Math.max(0, melodyFast - 0.010) * 4.8 +
+    Math.max(0, melodyFast - melodySlow * 0.60) * 3.8 +
+    melodicContrast * 2.2
+  );
+  let instrumentAccent = Math.max(midTransient * 2.0, hiTransient * 4.0, fluxTransient * 3.6);
+  instrumentAccent = Math.max(0, instrumentAccent - Math.max(0.0025, onsetAvg * 0.45));
+  instrumentAccent = Math.min(1, instrumentAccent / Math.max(0.010, onsetDev * 1.15 + 0.004));
+  const drumDominant = bass > mid * 1.55 && drumTransient > drumThreshold * 1.25 && melodicPeak < 0.18;
+  instrumentAccent = Math.max(instrumentAccent, melodicSustain * (drumDominant ? 0.55 : 1.08));
+  if (mid < 0.014 && hi < 0.008 && melodicPeak < 0.06 && spectralFlux < 0.005 && melodyFast < 0.012) instrumentAccent = 0;
+  const hasEnergy = level > 0.035 || waveRms > 0.032;
+  const percussiveSupport =
+    bassTransient > Math.max(0.0014, drumThreshold * 0.16) ||
+    (levelTransient + rmsTransient) > Math.max(0.0028, drumThreshold * 0.34);
+  const beatPhase = beatMapPhaseAt(Player.currentTime);
+  const usingBeatMap = !!beatPhase;
+  const phaseCloseness = usingBeatMap ? beatPhase.closeness : 0;
+  const canDetect = beatT > (usingBeatMap ? Math.max(0.105, beatPhase.period * 0.30) : Math.max(0.145, beatPeriod * 0.36));
+  const phaseAllowsBeat = !usingBeatMap || phaseCloseness > 0.16 || drumTransient > drumThreshold * 1.55;
+  const mappedLiveBeat = usingBeatMap && hasEnergy && percussiveSupport && canDetect && phaseAllowsBeat &&
+    drumTransient > drumThreshold * (0.92 - phaseCloseness * 0.34);
+  const onGridWindow = !usingBeatMap && beatConfidence > 0.35 && beatT > beatPeriod * 0.68 && beatT < beatPeriod * 1.42;
+  const detectedBeat = !usingBeatMap && transient > beatThreshold && hasEnergy && percussiveSupport && (canDetect || onGridWindow);
+  const predictedBeat = !usingBeatMap && beatConfidence > 0.40 && beatT >= beatPeriod * 0.985 &&
+    beatT < beatPeriod * 1.55 && hasEnergy && percussiveSupport && transient > beatThreshold * 0.68;
+  if (mappedLiveBeat || detectedBeat || predictedBeat) {
+    const interval = beatT;
+    if (detectedBeat && interval > 0.24 && interval < 1.05) {
+      const periodErr = interval - beatPeriod;
+      beatPeriod += periodErr * (beatConfidence > 0.45 ? 0.18 : 0.32);
+      beatPeriod = Math.max(0.28, Math.min(0.82, beatPeriod));
+      beatConfidence = Math.min(1, beatConfidence + 0.24);
+    } else if (predictedBeat) {
+      beatConfidence = Math.max(0, beatConfidence * 0.96 - 0.015);
+    }
+    const normalized = usingBeatMap
+      ? Math.max(0, drumTransient - drumThreshold * 0.62) / Math.max(0.008, drumDev + 0.004)
+      : Math.max(0, transient - beatThreshold) / Math.max(0.01, onsetDev + 0.006);
+    const energyStrength = Math.min(0.26, level * 1.20 + waveRms * 0.45);
+    const phaseBoost = usingBeatMap ? phaseCloseness * 0.18 : beatConfidence * 0.08;
+    const strength = predictedBeat
+      ? Math.min(0.52, 0.30 + energyStrength + phaseBoost)
+      : Math.min(1.0, 0.36 + normalized * 0.32 + energyStrength + phaseBoost);
+    beatHit = strength;
     beatEnv = Math.max(beatEnv, strength);
-    pulseVel += strength * 6.0;       // kick velocity on beat
+    pulseVel += strength * 6.0;
     beatT = 0;
+  } else if (!usingBeatMap && beatT > beatPeriod * 1.75) {
+    beatConfidence *= 0.94;
   }
   // smooth velocity-driven pulse: motion ramps and tails over ~150ms
   pulseVel *= Math.pow(0.0005, dt);    // fast velocity decay
   pulseClock += pulseVel * dt;
 
+  const warmStart = startupBoost;
+  startupBoost *= Math.pow(0.10, dt);
+  if (startupBoost < 0.01) startupBoost = 0;
+  const drumSpeedCue = hasEnergy && percussiveSupport
+    ? Math.min(1, Math.max(0, drumTransient - drumThreshold * 0.74) / Math.max(0.010, drumDev + 0.005) * 0.58 + phaseCloseness * 0.10)
+    : 0;
+  const speedCue = Math.min(1, Math.max(beatHit, drumSpeedCue > 0.46 ? drumSpeedCue * 0.78 : 0, warmStart * 0.22));
+
   const t = (performance.now() - start) / 1000;
   if (EFFECTS[curEffect].external === 'trails') {
-    if (trailsApi) trailsApi.render(dt, smoothBass, smoothMid, smoothHi, beatEnv);
+    const renderBeat = Math.max(beatEnv, warmStart * 0.16);
+    const renderHit = Math.max(beatHit, warmStart * 0.12);
+    if (trailsApi) trailsApi.render(dt, smoothBass, smoothMid, smoothHi, renderBeat, renderHit, instrumentAccent, speedCue);
     requestAnimationFrame(frame);
     return;
   }
