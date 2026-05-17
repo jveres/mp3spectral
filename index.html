@@ -250,9 +250,18 @@
   ::-webkit-scrollbar { width: 8px; }
   ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 99px; }
 </style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://esm.sh/three@0.160.0",
+    "three/addons/": "https://esm.sh/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
 </head>
 <body>
   <canvas id="gl"></canvas>
+  <canvas id="trails" style="position:fixed;inset:0;width:100%;height:100%;display:none;z-index:0;"></canvas>
 
   <div class="welcome" id="welcome">
     <div class="welcome-card">
@@ -953,13 +962,395 @@ void main(){
 }
 `;
 
+// 'Trails Stream' is handled by an external Three.js scene (see initTrails below)
+
+let trailsApi = null;
+let trailsLoading = false;
+async function initTrails(){
+  if (trailsApi || trailsLoading) return;
+  trailsLoading = true;
+  let THREE;
+  try { THREE = await import('three'); }
+  catch(err){ console.error('failed to load three.js for Trails Stream', err); trailsLoading = false; return; }
+  const { EffectComposer } = await import('three/addons/postprocessing/EffectComposer.js');
+  const { RenderPass     } = await import('three/addons/postprocessing/RenderPass.js');
+  const { UnrealBloomPass} = await import('three/addons/postprocessing/UnrealBloomPass.js');
+  const { ShaderPass     } = await import('three/addons/postprocessing/ShaderPass.js');
+  const { SMAAPass       } = await import('three/addons/postprocessing/SMAAPass.js');
+  const { OutputPass     } = await import('three/addons/postprocessing/OutputPass.js');
+
+  const cfg = {
+    dpr: 1.5, exposure: 3.6505, brightness: 4.0131,
+    bloomStrength: 0.2025, bloomRadius: 0.294, bloomThreshold: 0.0,
+    speedMultiplier: 0.1, linesCount: 100,
+    dotDensity: 70, dotSize: 0.25, dotSpeed: 1.5, blurStrength: 3.5,
+    arcRadius: 10.0, bendStartZ: -150.0, floorLength: 132.75, wallHeight: 200.0,
+    color0: '#004c94', color1: '#2e89ff', color2: '#003994',
+    color3: '#004bad', color4: '#ff5900'
+  };
+
+  class CycCurve extends THREE.Curve {
+    constructor(x, zStart, zBend, radius, yEnd){
+      super(); this.x=x; this.zStart=zStart; this.zBend=zBend; this.radius=radius; this.yEnd=yEnd;
+      this.L_flat = Math.abs(zStart - (zBend + radius));
+      this.L_arc  = (Math.PI * radius) * 0.5;
+      this.L_up   = Math.max(0.1, yEnd - radius);
+      this.totalLength = this.L_flat + this.L_arc + this.L_up;
+    }
+    getPoint(t, target = new THREE.Vector3()){
+      const d = t * this.totalLength;
+      let py = 0, pz = 0;
+      if (d <= this.L_flat){ pz = this.zStart - d; }
+      else if (d <= this.L_flat + this.L_arc){
+        const norm = (d - this.L_flat) / this.L_arc;
+        const eased = norm*norm*(3.0 - 2.0*norm);
+        const angle = (norm*0.4 + eased*0.6) * (Math.PI * 0.5);
+        py = this.radius * (1.0 - Math.cos(angle));
+        pz = (this.zBend + this.radius) - Math.sin(angle) * this.radius;
+      } else {
+        py = this.radius + (d - (this.L_flat + this.L_arc));
+        pz = this.zBend;
+      }
+      return target.set(this.x, py, pz);
+    }
+  }
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x000000);
+  const camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 1, 2000);
+  camera.position.set(0, 20, 140);
+  camera.lookAt(0, 20, -50);
+
+  const renderer = new THREE.WebGLRenderer({ canvas: trailsCanvas, antialias: true, powerPreference: 'high-performance' });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(cfg.dpr);
+  renderer.toneMapping = THREE.LinearToneMapping;
+  renderer.toneMappingExposure = cfg.exposure;
+
+  const renderTarget = new THREE.WebGLRenderTarget(
+    window.innerWidth*cfg.dpr, window.innerHeight*cfg.dpr,
+    { type: THREE.HalfFloatType, format: THREE.RGBAFormat });
+
+  const renderScene = new RenderPass(scene, camera);
+  const smaaPass    = new SMAAPass(window.innerWidth*cfg.dpr, window.innerHeight*cfg.dpr);
+  const bloomPass   = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight),
+                                          cfg.bloomStrength, cfg.bloomRadius, cfg.bloomThreshold);
+  const blurShader = {
+    uniforms: {
+      tDiffuse: { value: null },
+      resolution: { value: new THREE.Vector2(window.innerWidth*cfg.dpr, window.innerHeight*cfg.dpr) },
+      blurStrength: { value: cfg.blurStrength }
+    },
+    vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+    fragmentShader: `
+      uniform sampler2D tDiffuse; uniform vec2 resolution; uniform float blurStrength;
+      varying vec2 vUv;
+      void main(){
+        float mask = 1.0 - smoothstep(0.0, 0.35, vUv.y);
+        float radius = mask * blurStrength;
+        if (radius < 0.1){ gl_FragColor = texture2D(tDiffuse, vUv); }
+        else {
+          vec4 color = vec4(0.0); float total = 0.0;
+          const float GA = 2.3999632;
+          for (int i = 0; i < 32; i++){
+            float f = float(i);
+            float r = sqrt(f)*radius;
+            float theta = f*GA;
+            vec2 offset = vec2(cos(theta), sin(theta)) * (r / resolution);
+            color += texture2D(tDiffuse, vUv + offset);
+            total += 1.0;
+          }
+          gl_FragColor = color / total;
+        }
+      }`
+  };
+  const blurPass = new ShaderPass(blurShader);
+  const outputPass = new OutputPass();
+
+  const composer = new EffectComposer(renderer, renderTarget);
+  composer.setPixelRatio(cfg.dpr);
+  composer.addPass(renderScene);
+  composer.addPass(smaaPass);
+  composer.addPass(bloomPass);
+  composer.addPass(blurPass);
+  composer.addPass(outputPass);
+
+  // floor
+  const floorMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide });
+  const floorMesh = new THREE.Mesh(new THREE.BufferGeometry(), floorMat);
+  floorMesh.position.set(0, -0.5, -0.5);
+  floorMesh.renderOrder = 1;
+  scene.add(floorMesh);
+
+  const vertexShader = `
+    varying vec2 vUv; varying vec3 vNormal; varying vec3 vViewPosition;
+    void main(){
+      vUv = uv;
+      vNormal = normalMatrix * normal;
+      vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+      vViewPosition = -mvPosition.xyz;
+      gl_Position = projectionMatrix * mvPosition;
+    }`;
+  const fragmentShader = `
+    varying vec2 vUv; varying vec3 vNormal; varying vec3 vViewPosition;
+    uniform float uTime; uniform vec3 uColor;
+    uniform float uSpeed; uniform float uOffset; uniform float uTailLength;
+    uniform float uIntensityMultiplier; uniform float uBendUv; uniform float uIsReflection;
+    uniform float uDotDensity; uniform float uDotSize; uniform float uDotSpeed;
+    uniform float uBrightness; uniform float uDirection;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    void main(){
+      float t = fract(uTime * uSpeed * uDirection + uOffset);
+      float dist = fract((t - vUv.x) * uDirection + 1.0);
+      float baseAlpha = smoothstep(uTailLength, 0.0, dist);
+      baseAlpha = pow(max(0.0, baseAlpha), 1.2);
+      vec3 viewDir = normalize(vViewPosition);
+      float fresnel = abs(dot(normalize(vNormal), viewDir));
+      float edgeSoftness = smoothstep(0.0, 0.02, fresnel);
+      baseAlpha *= edgeSoftness;
+      float core = pow(max(0.0, baseAlpha), 3.0) * 1.5;
+      float movingUV = vUv.x - (uTime * uSpeed * uDotSpeed * uDirection) - uOffset;
+      float signalPos = movingUV * uDotDensity;
+      float dotId = floor(signalPos);
+      float dotLocal = fract(signalPos);
+      float distToCenter = length(vec2((dotLocal - 0.5) * 2.0, (fract(vUv.y + 0.5) - 0.5) * 6.0));
+      float dotShape = 1.0 - smoothstep(0.0, max(0.001, uDotSize), distToCenter);
+      float dotFinal = dotShape * step(0.6, hash(vec2(dotId, uOffset))) *
+                       (sin(uTime * 4.0 + hash(vec2(dotId)) * 6.28) * 0.3 + 0.7) * baseAlpha;
+      if (uIsReflection > 0.5){
+        float refFade = 1.0 - smoothstep(uBendUv - 0.015, uBendUv, vUv.x);
+        baseAlpha *= refFade;
+        core *= refFade;
+        dotFinal *= refFade * 0.1;
+        baseAlpha = pow(max(0.0, baseAlpha), 0.5) * (0.7 + hash(vUv * 300.0 + uTime * 0.05) * 0.3);
+        core *= 0.3;
+      }
+      vec3 trailColor = uColor * (baseAlpha + core * 1.5) * uIntensityMultiplier * uBrightness;
+      vec3 rgb = trailColor / max(1.0 - clamp(dotFinal * 1.8, 0.0, 0.95), 0.001) +
+                 uColor * dotFinal * 2.5 * uIntensityMultiplier * uBrightness;
+      gl_FragColor = vec4(rgb, (baseAlpha + dotFinal) * uIntensityMultiplier);
+    }`;
+
+  const group = new THREE.Group();
+  scene.add(group);
+  const trailObjects = [];
+  const trailMaterials = [];
+  // Audio reactivity: each trail listens to a specific frequency bin.
+  // Pairs are (mainMat, refMat) sharing one binIdx. Orange (color4) trails get high freqs;
+  // blues are spread across bass/mid bins so the bass really lights them up.
+  const trailBins = [];
+
+  for (let i = 0; i < cfg.linesCount; i++){
+    const normIdx = (i / (cfg.linesCount - 1)) * 2 - 1;
+    const linearPos = normIdx;
+    const expPos = Math.sign(normIdx) * Math.pow(Math.abs(normIdx), 1.2);
+    let startX = (linearPos * 0.5 + expPos * 0.5) * 80;
+    startX += (Math.random() - 0.5) * 2.0;
+    const thickness = Math.random() * 0.2 + 0.1;
+    const colorIdx = Math.floor(Math.random() * 5);
+    const uniforms = {
+      uTime: { value: 0 },
+      uColor: { value: new THREE.Color(cfg[`color${colorIdx}`]) },
+      uColorIndex: { value: colorIdx },
+      uSpeed: { value: Math.random() * 0.5 + 0.2 },
+      uOffset: { value: Math.random() },
+      uTailLength: { value: Math.random() * 0.4 + 0.3 },
+      uIntensityMultiplier: { value: 1.0 },
+      uBendUv: { value: 0.0 },
+      uIsReflection: { value: 0.0 },
+      uDotDensity: { value: cfg.dotDensity },
+      uDotSize: { value: cfg.dotSize },
+      uDotSpeed: { value: cfg.dotSpeed },
+      uBrightness: { value: cfg.brightness },
+      uDirection: { value: 1.0 }
+    };
+    const material = new THREE.ShaderMaterial({ vertexShader, fragmentShader, uniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    const mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
+    const refMaterial = material.clone();
+    refMaterial.uniforms.uIntensityMultiplier.value = 0.4;
+    refMaterial.uniforms.uIsReflection.value = 1.0;
+    const refMesh = new THREE.Mesh(new THREE.BufferGeometry(), refMaterial);
+    refMesh.scale.y = -1; refMesh.position.y = -1.0;
+    group.add(mesh, refMesh);
+    trailMaterials.push(material.uniforms, refMaterial.uniforms);
+    trailObjects.push({ mesh, refMesh, startX, thickness });
+    // distribute trails log-uniformly across the populated part of the spectrum
+    // so each trail listens to a distinct frequency and reacts independently.
+    const t01 = (i + Math.random()*0.5) / Math.max(1, cfg.linesCount);  // jittered 0..1
+    const bin01 = Math.pow(Math.min(1, t01), 0.6) * 0.65;               // 0..0.65 of FFT
+    trailBins.push(bin01);
+  }
+
+  function updateGeometries(){
+    if (floorMesh.geometry) floorMesh.geometry.dispose();
+    const floorGeo = new THREE.PlaneGeometry(1000, 1000, 1, 1500);
+    floorGeo.rotateX(-Math.PI * 0.5);
+    const pos = floorGeo.attributes.position.array;
+    for (let i = 0; i < pos.length; i += 3){
+      if (pos[i + 2] < cfg.bendStartZ){
+        let d = cfg.bendStartZ - pos[i + 2];
+        let maxA = cfg.arcRadius * Math.PI * 0.5;
+        if (d < maxA){
+          let n = d / maxA;
+          let a = (n * 0.4 + (n * n * (3.0 - 2.0 * n)) * 0.6) * (Math.PI * 0.5);
+          pos[i + 1] = cfg.arcRadius * (1.0 - Math.cos(a));
+          pos[i + 2] = cfg.bendStartZ - Math.sin(a) * cfg.arcRadius;
+        } else {
+          pos[i + 1] = cfg.arcRadius + (d - maxA);
+          pos[i + 2] = cfg.bendStartZ - cfg.arcRadius;
+        }
+      }
+    }
+    floorGeo.computeVertexNormals();
+    floorMesh.geometry = floorGeo;
+    const bendUv = Math.abs(cfg.floorLength - cfg.bendStartZ) /
+      (Math.abs(cfg.floorLength - cfg.bendStartZ) + (Math.PI * cfg.arcRadius) * 0.5 + Math.max(0.1, cfg.wallHeight - cfg.arcRadius));
+    trailObjects.forEach(obj => {
+      const path = new CycCurve(obj.startX, cfg.floorLength, cfg.bendStartZ - cfg.arcRadius, cfg.arcRadius, cfg.wallHeight);
+      const geo = new THREE.TubeGeometry(path, 200, obj.thickness, 8, false);
+      if (obj.mesh.geometry) obj.mesh.geometry.dispose();
+      obj.mesh.geometry = obj.refMesh.geometry = geo;
+      obj.mesh.material.uniforms.uBendUv.value = obj.refMesh.material.uniforms.uBendUv.value = bendUv;
+    });
+  }
+  updateGeometries();
+
+  function onResize(){
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    composer.setSize(window.innerWidth, window.innerHeight);
+    smaaPass.setSize(window.innerWidth * cfg.dpr, window.innerHeight * cfg.dpr);
+    blurPass.uniforms.resolution.value.set(window.innerWidth * cfg.dpr, window.innerHeight * cfg.dpr);
+  }
+  window.addEventListener('resize', onResize);
+
+  // Per-trail smoothed state
+  const trailLevels = new Float32Array(trailObjects.length); // spectrum follower
+  const trailSpeeds = new Float32Array(trailObjects.length); // smoothed actual speed
+  const trailPhases = new Float32Array(trailObjects.length); // integrated phase (monotonic)
+  // capture original base speeds, then force uSpeed=1 — we now integrate phase per-trail
+  // and feed it via uTime so apparent motion never reverses.
+  for (let i = 0; i < trailObjects.length; i++){
+    const baseSpeed = trailMaterials[i*2].uSpeed.value;
+    trailObjects[i].baseSpeed = baseSpeed;
+    trailSpeeds[i] = baseSpeed;
+    trailMaterials[i*2  ].uSpeed.value = 1.0;
+    trailMaterials[i*2+1].uSpeed.value = 1.0;
+  }
+  let envBeat = 0;
+  let lastBeatVal = 0;
+
+  // Reactive palette cycling.
+  const palettes = [
+    ['#004c94', '#2e89ff', '#003994', '#004bad', '#ff5900'], // blue + orange (original)
+    ['#5a0a7a', '#c548ff', '#3a0857', '#4b0b6a', '#ffd84a'], // purple + yellow
+    ['#073a55', '#1ed0b8', '#062a3c', '#08405e', '#ff6e3a'], // teal + coral
+    ['#1a1a55', '#5a8cff', '#0d0d33', '#15154a', '#ff3a7a'], // indigo + magenta
+    ['#2a4a0a', '#4ee06a', '#162c08', '#1f3a08', '#ff9024'], // forest + amber
+  ];
+  const palettesRGB = palettes.map(p => p.map(hex => {
+    const c = new THREE.Color(hex); return [c.r, c.g, c.b];
+  }));
+  let palettePhase = 0;
+  const tmpColor = new THREE.Color();
+  function applyPalette(t01){
+    const n = palettesRGB.length;
+    const f = (t01 % 1) * n;
+    const ia = Math.floor(f) % n;
+    const ib = (ia + 1) % n;
+    let k = f - Math.floor(f);
+    k = k * k * (3 - 2 * k);             // smoothstep
+    const a = palettesRGB[ia], b = palettesRGB[ib];
+    const slot = [];
+    for (let s = 0; s < 5; s++){
+      slot.push([
+        a[s][0] + (b[s][0] - a[s][0]) * k,
+        a[s][1] + (b[s][1] - a[s][1]) * k,
+        a[s][2] + (b[s][2] - a[s][2]) * k,
+      ]);
+    }
+    for (let i = 0; i < trailObjects.length; i++){
+      const u  = trailMaterials[i*2];
+      const ur = trailMaterials[i*2 + 1];
+      const ci = (u.uColorIndex.value | 0) % 5;
+      const rgb = slot[ci];
+      tmpColor.setRGB(rgb[0], rgb[1], rgb[2]);
+      u.uColor.value.copy(tmpColor);
+      ur.uColor.value.copy(tmpColor);
+    }
+  }
+
+  trailsApi = {
+    render(dt, bass, mid, hi, beat){
+      bloomPass.strength = cfg.bloomStrength + envBeat * 0.55;
+
+      // beat: instant attack, fast release
+      if (beat > envBeat) envBeat = beat;
+      else envBeat *= Math.pow(0.05, dt);
+      const beatRising = Math.max(0, beat - lastBeatVal);
+      lastBeatVal = beat;
+
+      // palette phase: slow drift + faster sweep when music is loud, +kicks on beats
+      const overall = (bass + mid + hi) / 3;
+      palettePhase += dt * (0.008 + overall * 0.04) + beatRising * 0.012;
+      applyPalette(palettePhase);
+
+      const an = Player.analyser;
+      if (an){
+        if (!freqData || freqData.length !== an.frequencyBinCount){
+          freqData = new Uint8Array(an.frequencyBinCount);
+        }
+        an.getByteFrequencyData(freqData);
+        const N = freqData.length;
+
+        // Velocity tracks the per-trail bin level closely in BOTH directions —
+        // bin goes loud, that trail surges; bin goes quiet, that trail brakes.
+        const kAttack  = Math.min(1, dt * 28.0);   // ~35ms attack
+        const kRelease = Math.min(1, dt * 18.0);   // ~55ms release (was ~550ms)
+        const kSpeed   = Math.min(1, dt * 25.0);   // ~40ms — velocity hugs the level
+
+        for (let i = 0; i < trailObjects.length; i++){
+          const idx = Math.min(N - 1, Math.floor(trailBins[i] * N));
+          const raw = (freqData[idx] + freqData[Math.max(0,idx-1)] + freqData[Math.min(N-1,idx+1)]) / (3*255);
+          const prev = trailLevels[i];
+          trailLevels[i] = raw > prev ? prev + (raw - prev) * kAttack
+                                      : prev + (raw - prev) * kRelease;
+          const lv = trailLevels[i];
+          const trans = Math.max(0, raw - prev);
+
+          trailMaterials[i*2  ].uBrightness.value = cfg.brightness * (0.35 + lv*1.8 + envBeat*0.3);
+          trailMaterials[i*2+1].uBrightness.value = cfg.brightness * (0.20 + lv*0.9 + envBeat*0.15);
+          trailMaterials[i*2  ].uIntensityMultiplier.value = 1.0 + envBeat*0.4 + lv*0.3;
+          trailMaterials[i*2+1].uIntensityMultiplier.value = 0.4 + envBeat*0.2 + lv*0.15;
+
+          // Per-trail speed: silence drifts (~0.25×), peak ~5×. Steep curve so soft
+          // bins still cause a noticeable surge.
+          const baseSpeed = trailObjects[i].baseSpeed;
+          const lvShaped  = Math.pow(lv, 0.35);
+          const targetSpeed = baseSpeed * (0.25 + lvShaped * 4.5);
+          trailSpeeds[i] += (targetSpeed - trailSpeeds[i]) * kSpeed;
+          trailPhases[i] += dt * Math.max(0, trailSpeeds[i]) * 0.07;
+          // Per-trail transient kick — bigger jolt for clearer beat punches
+          trailPhases[i] += trans * 0.06;
+          trailMaterials[i*2  ].uTime.value = trailPhases[i];
+          trailMaterials[i*2+1].uTime.value = trailPhases[i];
+        }
+      }
+      composer.render();
+    }
+  };
+  trailsLoading = false;
+}
+
 const EFFECTS = [
-  { name: 'Nebula',       src: FS_NEBULA },
-  { name: 'Star Nest',    src: FS_GALAXY },
-  { name: 'Synthwave',    src: FS_SYNTHWAVE },
-  { name: 'Kali',         src: FS_KALI },
-  { name: 'Plasma Globe', src: FS_PLASMA },
-  { name: 'Photos',       src: FS_PHOTOS },
+  { name: 'Nebula',        src: FS_NEBULA },
+  { name: 'Star Nest',     src: FS_GALAXY },
+  { name: 'Synthwave',     src: FS_SYNTHWAVE },
+  { name: 'Kali',          src: FS_KALI },
+  { name: 'Plasma Globe',  src: FS_PLASMA },
+  { name: 'Trails Stream', external: 'trails' },
+  { name: 'Photos',        src: FS_PHOTOS },
 ];
 
 function compile(type, src) {
@@ -1009,26 +1400,35 @@ function buildProgram(fsSrc) {
   };
 }
 
-const programs = EFFECTS.map(e => buildProgram(e.src));
+const programs = EFFECTS.map(e => e.external ? null : buildProgram(e.src));
 let curEffect = 0;
 
 const buf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, buf);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
 
+const trailsCanvas = document.getElementById('trails');
+
 function useEffect(i) {
-  curEffect = (i + programs.length) % programs.length;
-  const e = programs[curEffect];
-  gl.useProgram(e.prog);
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.enableVertexAttribArray(e.aPos);
-  gl.vertexAttribPointer(e.aPos, 2, gl.FLOAT, false, 0, 0);
-  gl.uniform1i(e.uSpec, 0);
-  document.getElementById('fxName').textContent = EFFECTS[curEffect].name;
+  curEffect = (i + EFFECTS.length) % EFFECTS.length;
+  const fx = EFFECTS[curEffect];
+  if (fx.external === 'trails') {
+    canvas.style.display = 'none';
+    trailsCanvas.style.display = 'block';
+    initTrails();
+  } else {
+    canvas.style.display = 'block';
+    trailsCanvas.style.display = 'none';
+    const e = programs[curEffect];
+    gl.useProgram(e.prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.enableVertexAttribArray(e.aPos);
+    gl.vertexAttribPointer(e.aPos, 2, gl.FLOAT, false, 0, 0);
+    gl.uniform1i(e.uSpec, 0);
+  }
+  document.getElementById('fxName').textContent = fx.name;
   try { localStorage.setItem('mv.fx', String(curEffect)); } catch {}
-  // clear the photo-path HUD when leaving Photos. Don't reference Photos here
-  // since useEffect can be called before that const is initialized (TDZ).
-  if (EFFECTS[curEffect].name !== 'Photos') {
+  if (fx.name !== 'Photos') {
     const el = document.getElementById('imgPath');
     if (el) el.textContent = '';
   }
@@ -1295,7 +1695,6 @@ const Player = (() => {
 })();
 
 let freqData = null, specBytes = new Uint8Array(256);
-function ensureAudio() { Player.ensure(); }
 
 // ---------- Playlist ----------
 const playlistEl = document.getElementById('tracks');
@@ -1821,6 +2220,11 @@ function frame() {
   pulseClock += pulseVel * dt;
 
   const t = (performance.now() - start) / 1000;
+  if (EFFECTS[curEffect].external === 'trails') {
+    if (trailsApi) trailsApi.render(dt, smoothBass, smoothMid, smoothHi, beatEnv);
+    requestAnimationFrame(frame);
+    return;
+  }
   const e = programs[curEffect];
   gl.uniform2f(e.uRes, canvas.width, canvas.height);
   gl.uniform1f(e.uTime, t);
