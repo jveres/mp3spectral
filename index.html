@@ -1879,16 +1879,41 @@ const Player = (() => {
   let onPlay = null, onPause = null, onEnded = null;
 
   function hookAnalyser() {
-    if (analyserHooked) return;
     if (typeof Howler === 'undefined' || !Howler.ctx || !Howler.masterGain) return;
-    analyser = Howler.ctx.createAnalyser();
-    analyser.fftSize = 1024;
-    analyser.smoothingTimeConstant = 0.82;
-    // Splice analyser between Howler.masterGain and the destination.
+    if (!analyser) {
+      analyser = Howler.ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.82;
+    }
+    // Splice analyser between Howler.masterGain and the destination. Re-runnable:
+    // browsers can drop/rewire connections across an AudioContext interruption
+    // (other tab takes audio focus), so we re-apply the splice on context resume.
     try { Howler.masterGain.disconnect(); } catch {}
+    try { analyser.disconnect(); } catch {}
     Howler.masterGain.connect(analyser);
     analyser.connect(Howler.ctx.destination);
     analyserHooked = true;
+  }
+
+  // Re-create the underlying AudioBufferSourceNode by seeking to the current
+  // position. After an interruption (other tab grabbed audio focus), Safari /
+  // WebKit can return ctx.state to 'running' yet the still-attached source
+  // plays silently. Re-seeking forces Howler to spawn a fresh BufferSource.
+  function nudgeSource() {
+    if (!current) return;
+    try {
+      if (!current.playing()) return;
+      const t = current.seek();
+      if (typeof t === 'number') current.seek(t);
+    } catch {}
+  }
+
+  function onCtxStateChange() {
+    if (!Howler || !Howler.ctx) return;
+    if (Howler.ctx.state === 'running') {
+      hookAnalyser();
+      nudgeSource();
+    }
   }
 
   function unloadCurrent() {
@@ -1927,6 +1952,20 @@ const Player = (() => {
       if (typeof Howler === 'undefined') return;
       if (Howler.ctx) { try { Howler.ctx.resume(); } catch {} }
     },
+    // Call when returning to the tab after another tab held audio focus.
+    // Resumes the AudioContext, re-applies the analyser splice once running,
+    // and nudges the current Howl's BufferSource so it can't be left silently
+    // muted by a WebKit-style interruption.
+    recover() {
+      if (typeof Howler === 'undefined' || !Howler.ctx) return;
+      const ctx = Howler.ctx;
+      try { ctx.resume(); } catch {}
+      const apply = () => { hookAnalyser(); nudgeSource(); };
+      if (ctx.state === 'running') apply();
+      // Schedule a follow-up in case resume() needed a tick to take effect.
+      setTimeout(() => { if (ctx.state === 'running') apply(); }, 80);
+      setTimeout(() => { if (ctx.state === 'running') apply(); }, 300);
+    },
     hardResetSync() { unloadCurrent(); },  // Howler manages ctx itself
 
     loadBlob(blob) {
@@ -1948,6 +1987,10 @@ const Player = (() => {
             }
             current = sound;
             hookAnalyser();
+            if (Howler.ctx && !Howler.ctx._mvStateBound) {
+              try { Howler.ctx.addEventListener('statechange', onCtxStateChange); } catch {}
+              Howler.ctx._mvStateBound = true;
+            }
             resolve(sound.duration());
           },
           onloaderror(_id, err) {
@@ -2943,17 +2986,19 @@ function syncFsIcon() {
 document.addEventListener('fullscreenchange', syncFsIcon);
 document.addEventListener('webkitfullscreenchange', syncFsIcon);
 
-// Resume the AudioContext when the tab regains focus. Browsers (and the OS,
-// on iOS/macOS especially) suspend or 'interrupt' a context when another tab
-// takes audio focus; without this, returning to our tab and pressing play
-// would create a BufferSource that plays silently.
-// Resume on tab return — synchronous resume only (no async/reset chain),
-// since those can fight with the user-gesture stack on the next click.
+// Resume the AudioContext when the tab regains focus and rebuild the audio
+// graph if needed. Browsers (and the OS, on iOS/macOS especially) suspend or
+// 'interrupt' a context when another tab takes audio focus. After such an
+// interruption WebKit can return ctx.state to 'running' while leaving the
+// already-attached BufferSource silently muted, which manifests as "player
+// works, timer advances, no audio". Player.recover() re-applies our analyser
+// splice and re-seeks the current Howl to spawn a fresh BufferSource.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    try { Player.resumeCtx(); } catch {}
+    try { Player.recover(); } catch {}
   }
 });
+window.addEventListener('focus', () => { try { Player.recover(); } catch {} });
 
 // Keyboard
 window.addEventListener('keydown', (e) => {
