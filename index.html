@@ -1243,8 +1243,8 @@ async function initTrails(){
         core *= 0.3;
       }
       vec3 trailColor = uColor * (baseAlpha + core * 1.5) * uIntensityMultiplier * uBrightness;
-      vec3 rgb = trailColor / max(1.0 - clamp(dotFinal * 0.35, 0.0, 0.45), 0.001) +
-                 uColor * dotFinal * 0.55 * uIntensityMultiplier * uBrightness;
+      vec3 rgb = trailColor / max(1.0 - clamp(dotFinal * 0.18, 0.0, 0.28), 0.001) +
+                 uColor * dotFinal * 0.30 * uIntensityMultiplier * uBrightness;
       gl_FragColor = vec4(rgb, (baseAlpha + dotFinal * 0.90) * uIntensityMultiplier);
     }`;
 
@@ -1426,13 +1426,13 @@ async function initTrails(){
     render(dt, bass, mid, hi, beat, hit = 0, accent = 0, speed = 0){
       // beat: instant attack, fast release
       if (beat > envBeat) envBeat = beat;
-      else envBeat *= Math.pow(0.05, dt);
+      else envBeat *= Math.pow(0.22, dt);
       const beatRising = Math.max(hit, beat - lastBeatVal, 0);
-      hitPulse = Math.max(hitPulse * Math.pow(0.00008, dt), beatRising);
-      accentPulse = Math.max(accentPulse * Math.pow(0.018, dt), accent);
+      hitPulse = Math.max(hitPulse * Math.pow(0.05, dt), beatRising);
+      accentPulse = Math.max(accentPulse * Math.pow(0.05, dt), accent);
       lastBeatVal = beat;
       const overall = (bass + mid + hi) / 3;
-      streamRhythm = Math.max(streamRhythm * Math.pow(0.0009, dt), Math.min(1, envBeat * 0.70 + hitPulse * 1.25));
+      streamRhythm = Math.max(streamRhythm * Math.pow(0.15, dt), Math.min(1, envBeat * 0.90 + hitPulse * 1.40));
       const speedHit = Math.min(1, Math.max(speed, beatRising));
       speedPulse = Math.max(speedPulse * Math.pow(0.0000007, dt), speedHit);
       const grooveTarget = Math.min(1, speedPulse * 0.34);
@@ -1489,18 +1489,18 @@ async function initTrails(){
           const mainU = trailMaterials[i*2];
           const refU = trailMaterials[i*2+1];
 
-          mainU.uRhythm.value = rhythm + noteAccent * 0.24;
-          refU.uRhythm.value = rhythm * 0.40 + noteAccent * 0.10;
-          mainU.uBeat.value = hitAccent + noteAccent * 0.18;
-          refU.uBeat.value = hitAccent * 0.30 + noteAccent * 0.07;
-          mainU.uDotSize.value = cfg.dotSize * (0.92 + rhythm * 0.18 + hitAccent * 0.20 + noteAccent * 0.18 + hi * 0.08);
-          refU.uDotSize.value = cfg.dotSize * (0.62 + rhythm * 0.10 + noteAccent * 0.07);
-          mainU.uDotSpeed.value = cfg.dotSpeed * (0.70 + rhythm * 0.30 + speedAccent * 1.65 + hitAccent * 0.30 + noteAccent * 0.42);
-          refU.uDotSpeed.value = cfg.dotSpeed * (0.62 + rhythm * 0.18 + speedAccent * 0.55 + noteAccent * 0.14);
-          mainU.uBrightness.value = cfg.brightness * (0.30 + lv*0.90 + rhythm*0.24 + hitAccent*0.18 + noteAccent*0.16);
-          refU.uBrightness.value = cfg.brightness * (0.16 + lv*0.40 + rhythm*0.10 + hitAccent*0.06 + noteAccent*0.06);
-          mainU.uIntensityMultiplier.value = 0.82 + hitAccent*0.18 + noteAccent*0.10 + lv*0.20 + rhythm*0.16;
-          refU.uIntensityMultiplier.value = 0.34 + hitAccent*0.07 + noteAccent*0.04 + lv*0.09 + rhythm*0.06;
+          mainU.uRhythm.value = rhythm + noteAccent * 0.18;
+          refU.uRhythm.value = rhythm * 0.40 + noteAccent * 0.08;
+          mainU.uBeat.value = hitAccent + noteAccent * 0.14;
+          refU.uBeat.value = hitAccent * 0.30 + noteAccent * 0.06;
+          mainU.uDotSize.value = cfg.dotSize * (0.92 + rhythm * 0.22 + hitAccent * 0.28 + noteAccent * 0.14 + hi * 0.06);
+          refU.uDotSize.value = cfg.dotSize * (0.62 + rhythm * 0.12 + noteAccent * 0.06);
+          mainU.uDotSpeed.value = cfg.dotSpeed * (0.70 + rhythm * 0.42 + speedAccent * 1.65 + hitAccent * 0.45 + noteAccent * 0.32);
+          refU.uDotSpeed.value = cfg.dotSpeed * (0.62 + rhythm * 0.24 + speedAccent * 0.55 + noteAccent * 0.10);
+          mainU.uBrightness.value = cfg.brightness * (0.24 + lv*0.22 + rhythm*0.38 + hitAccent*0.32 + noteAccent*0.08);
+          refU.uBrightness.value = cfg.brightness * (0.12 + lv*0.10 + rhythm*0.16 + hitAccent*0.12 + noteAccent*0.03);
+          mainU.uIntensityMultiplier.value = 0.70 + hitAccent*0.24 + noteAccent*0.05 + lv*0.06 + rhythm*0.22;
+          refU.uIntensityMultiplier.value = 0.28 + hitAccent*0.10 + noteAccent*0.02 + lv*0.03 + rhythm*0.09;
 
           // Per-trail speed surges on shared beat hits; bin level only adds texture.
           const baseSpeed = trailObjects[i].baseSpeed;
