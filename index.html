@@ -983,7 +983,7 @@ async function initTrails(){
     dpr: 1.5, exposure: 3.6505, brightness: 4.0131,
     bloomStrength: 0.2025, bloomRadius: 0.294, bloomThreshold: 0.0,
     speedMultiplier: 0.1, linesCount: 100,
-    dotDensity: 18, dotSize: 0.20, dotSpeed: 1.35, blurStrength: 3.5,
+    dotDensity: 10, dotSize: 0.20, dotSpeed: 1.35, blurStrength: 2.0,
     arcRadius: 10.0, bendStartZ: -150.0, floorLength: 132.75, wallHeight: 200.0,
     color0: '#004c94', color1: '#2e89ff', color2: '#003994',
     color3: '#004bad', color4: '#ff5900'
@@ -1243,8 +1243,8 @@ async function initTrails(){
         core *= 0.3;
       }
       vec3 trailColor = uColor * (baseAlpha + core * 1.5) * uIntensityMultiplier * uBrightness;
-      vec3 rgb = trailColor / max(1.0 - clamp(dotFinal * 1.30, 0.0, 0.88), 0.001) +
-                 uColor * dotFinal * 2.10 * uIntensityMultiplier * uBrightness;
+      vec3 rgb = trailColor / max(1.0 - clamp(dotFinal * 0.35, 0.0, 0.45), 0.001) +
+                 uColor * dotFinal * 0.55 * uIntensityMultiplier * uBrightness;
       gl_FragColor = vec4(rgb, (baseAlpha + dotFinal * 0.90) * uIntensityMultiplier);
     }`;
 
