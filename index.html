@@ -981,7 +981,7 @@ async function initTrails(){
 
   const cfg = {
     dpr: 1.5, exposure: 3.6505, brightness: 4.0131,
-    bloomStrength: 0.2025, bloomRadius: 0.294, bloomThreshold: 0.0,
+    bloomStrength: 0.2025, bloomRadius: 0.294, bloomThreshold: 0.35,
     speedMultiplier: 0.1, linesCount: 100,
     dotDensity: 10, dotSize: 0.20, dotSpeed: 1.35, blurStrength: 2.0,
     arcRadius: 10.0, bendStartZ: -150.0, floorLength: 132.75, wallHeight: 200.0,
@@ -1090,9 +1090,6 @@ async function initTrails(){
     side: THREE.DoubleSide,
     uniforms: {
       uTime: { value: 0 },
-      uRhythm: { value: 0 },
-      uBass: { value: 0 },
-      uHi: { value: 0 },
       uAspect: { value: window.innerWidth / Math.max(1, window.innerHeight) }
     },
     vertexShader: `
@@ -1105,9 +1102,6 @@ async function initTrails(){
       precision highp float;
       varying vec2 vUv;
       uniform float uTime;
-      uniform float uRhythm;
-      uniform float uBass;
-      uniform float uHi;
       uniform float uAspect;
 
       float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
@@ -1127,65 +1121,92 @@ async function initTrails(){
         }
         return v;
       }
-      mat2 rot(float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c); }
 
+      // Smooth metaDiamond: same diamond shape as the source Shadertoy but
+      // with quadratic falloff and a finite peak so star centres don't
+      // flicker under sub-pixel camera jitter.
+      float metaDiamond(vec2 q, vec2 starPos, float r) {
+        vec2 d = abs(q - starPos);
+        float m = d.x + d.y;
+        return r * r / (m * m + r * r * 0.6);
+      }
       void main(){
-        vec2 uv = vUv;
-        vec2 p = (uv - 0.5) * vec2(uAspect, 1.0);
-        float upper = smoothstep(0.24, 0.48, uv.y);
-        float horizonFade = 1.0 - smoothstep(0.18, 0.36, abs(uv.y - 0.30));
+        // Widened sky area so the nebula fills the visible background
+        // instead of being clipped to a thin upper sliver.
+        float upper = smoothstep(0.05, 0.22, vUv.y);
+        float horizonFade = 1.0 - smoothstep(0.0, 0.18, vUv.y);
         float skyMask = upper;
+        if (skyMask < 0.001) { gl_FragColor = vec4(0.0); return; }
 
-        vec2 q = p * 1.18 + vec2(uTime * 0.030, -uTime * 0.010);
-        vec2 fold = q;
-        float nest = 0.0;
-        for (int i = 0; i < 5; i++){
-          fold = abs(fold) / max(dot(fold, fold), 0.28) - vec2(0.64, 0.48);
-          fold *= rot(0.11 + float(i) * 0.27);
-          nest += exp(-length(fold) * (2.8 + float(i) * 0.55)) * 0.18;
+        float tDrift = uTime * 0.012;
+        // Larger spatial scale → more cells visible → more stars.
+        // Stars use a stationary uv so they never blink as the field drifts.
+        vec2 uvStars = (vUv - 0.5) * vec2(uAspect, 1.0) * 7.0;
+        // Nebula uses the drifted uv so the cloud slowly moves behind the stars.
+        vec2 uvNeb = uvStars - vec2(tDrift, tDrift * 0.35);
+
+        // Stars: 3x3 cell neighborhood, source's exact placement formula.
+        vec3 starColor = vec3(0.0);
+        vec2 grid = floor(uvStars);
+        for (int y = -1; y <= 1; y++) {
+          for (int x = -1; x <= 1; x++) {
+            vec2 cell = grid + vec2(float(x), float(y));
+            vec2 starPos = cell + vec2(hash(cell), hash(cell.yx)) - 0.5;
+            float starSize = hash(cell * 1.5) * 0.003;
+            starColor += vec3(1.0, 0.95, 0.8) * metaDiamond(uvStars, starPos, starSize);
+          }
         }
-        float dust = smoothstep(0.36, 0.90, fbm(q * 0.92 + nest * 0.08));
-        float milkyBand = exp(-abs(p.y * 1.25 + p.x * 0.34 - 0.10) * 2.45);
-        float farGlow = exp(-length((p - vec2(-0.18, 0.22)) * vec2(0.72, 1.4)) * 1.55);
-        dust = max(dust * 0.62, milkyBand * (0.26 + dust * 0.28));
-        dust *= smoothstep(1.65, 0.0, length(p)) * skyMask;
 
-        vec2 grid = uv * vec2(165.0 * uAspect, 92.0);
-        vec2 cell = floor(grid);
-        vec2 local = fract(grid) - 0.5;
-        float h = hash(cell);
-        float size = mix(110.0, 360.0, hash(cell + 19.7));
-        float star = exp(-dot(local, local) * size) * smoothstep(0.982, 0.9994, h);
-        float twinkle = 0.82 + 0.18 * sin(uTime * (0.20 + hash(cell + 4.0) * 0.42) + h * 6.28318);
-        star *= twinkle * skyMask;
-        float tintPick = hash(cell + 31.0);
-        vec3 blueTint = vec3(0.18, 0.48, 1.00);
-        vec3 cyanTint = vec3(0.10, 0.95, 0.92);
-        vec3 violetTint = vec3(0.82, 0.38, 1.00);
-        vec3 warmTint = vec3(1.00, 0.50, 0.18);
-        vec3 starTint = blueTint;
-        if (tintPick > 0.30) starTint = cyanTint;
-        if (tintPick > 0.58) starTint = violetTint;
-        if (tintPick > 0.84) starTint = warmTint;
+        // Domain-warped fbm nebula (source unchanged).
+        vec2 pp = uvNeb * 0.36;  // gives same effective nebula scale as source
+        float t = uTime * 0.012;
+        float q = fbm(pp - t);
+        float r = fbm(pp + q + vec2(1.7, 9.2) + 0.15 * t);
+        float f = fbm(pp + r);
+        f = pow(f, 3.0);
 
-        vec2 grid2 = uv * vec2(72.0 * uAspect, 42.0);
-        vec2 cell2 = floor(grid2);
-        vec2 local2 = fract(grid2) - 0.5;
-        float h2 = hash(cell2 + 73.4);
-        float brightStar = exp(-dot(local2, local2) * 210.0) * smoothstep(0.992, 0.9996, h2) * skyMask;
-        float brightTintPick = hash(cell2 + 111.0);
-        vec3 brightTint = brightTintPick < 0.55 ? vec3(0.22, 0.70, 1.00) : vec3(1.00, 0.48, 0.20);
+        // Independent hue field, slowly varying, so neighbouring structure
+        // picks different palette colours. The density (f) controls "where"
+        // the nebula glows; the hue selector controls "what color" it glows.
+        float hSel = fbm(pp * 0.45 + vec2(13.7, 4.2));
+        float hScaled = hSel * 4.0;
+        vec3 cA = vec3(0.95, 0.10, 0.55); // magenta
+        vec3 cB = vec3(1.00, 0.55, 0.05); // orange
+        vec3 cC = vec3(0.20, 0.75, 1.00); // cyan
+        vec3 cD = vec3(0.55, 0.20, 1.00); // violet
+        vec3 baseHue;
+        if      (hScaled < 1.0) baseHue = mix(cA, cB, hScaled);
+        else if (hScaled < 2.0) baseHue = mix(cB, cC, hScaled - 1.0);
+        else if (hScaled < 3.0) baseHue = mix(cC, cD, hScaled - 2.0);
+        else                    baseHue = mix(cD, cA, hScaled - 3.0);
 
-        vec3 col = vec3(0.0);
-        col += dust * vec3(0.050, 0.105, 0.285) * (0.82 + uBass * 0.06);
-        col += farGlow * skyMask * vec3(0.030, 0.060, 0.180) * (0.55 + uRhythm * 0.05);
-        col += nest * skyMask * vec3(0.024, 0.055, 0.165) * (0.62 + uRhythm * 0.08);
-        col += milkyBand * dust * vec3(0.020, 0.085, 0.240) * (0.52 + uBass * 0.04);
-        col += star * starTint * (0.78 + uHi * 0.16);
-        col += brightStar * brightTint * (0.88 + uRhythm * 0.06);
-        col *= 1.0 - horizonFade * 0.55;
+        // A second, faster noise adds local tint variation so even within
+        // one "region" the color shifts a bit (more like real nebula gas).
+        float hShift = fbm(pp * 1.4 - vec2(3.1, 7.9));
+        vec3 altHue = mix(cA, cC, hShift);
+        baseHue = mix(baseHue, altHue, 0.25);
 
-        float alpha = clamp((dust * 0.44 + farGlow * 0.18 + nest * 0.22 + star * 0.72 + brightStar * 0.95) * skyMask, 0.0, 0.86);
+        // Density accumulation — same as source, just using the colourful base.
+        vec3 nebulaColor = baseHue * (f + f*f + f*f*f);
+
+        // Strong saturation boost.
+        float nebLum = dot(nebulaColor, vec3(0.299, 0.587, 0.114));
+        nebulaColor = mix(vec3(nebLum), nebulaColor, 2.20);
+        nebulaColor = max(nebulaColor, vec3(0.0));
+        // Proportional brightness cap, raised so vivid regions are clearly
+        // visible. Goes a bit over bloom threshold (0.35) — bright pink/cyan
+        // peaks will bloom slightly, which actually helps them read as "glow"
+        // rather than flat color.
+        float maxC = max(nebulaColor.r, max(nebulaColor.g, nebulaColor.b));
+        nebulaColor *= 0.55 / max(0.55, maxC);
+
+        vec3 col = nebulaColor + starColor;
+        col *= vec3(1.0, 0.9, 1.2);  // source's magenta cast
+
+        col *= skyMask;
+        col *= 1.0 - horizonFade * 0.32;
+
+        float alpha = clamp(max(max(col.r, col.g), col.b) * 1.20, 0.0, 0.95) * skyMask;
         gl_FragColor = vec4(col, alpha);
       }`
   });
@@ -1243,8 +1264,8 @@ async function initTrails(){
         core *= 0.3;
       }
       vec3 trailColor = uColor * (baseAlpha + core * 1.5) * uIntensityMultiplier * uBrightness;
-      vec3 rgb = trailColor / max(1.0 - clamp(dotFinal * 0.18, 0.0, 0.28), 0.001) +
-                 uColor * dotFinal * 0.30 * uIntensityMultiplier * uBrightness;
+      vec3 rgb = trailColor / max(1.0 - clamp(dotFinal * 0.10, 0.0, 0.18), 0.001) +
+                 uColor * dotFinal * 0.18 * uIntensityMultiplier * uBrightness;
       gl_FragColor = vec4(rgb, (baseAlpha + dotFinal * 0.90) * uIntensityMultiplier);
     }`;
 
@@ -1364,9 +1385,10 @@ async function initTrails(){
   let speedPulse = 0;
   let speedGroove = 0;
   let accentPulse = 0;
+  let melodyEnv = 0;
+  let melodyFlow = 0;
   let rhythmClock = 0;
   let skyFlowTime = 0;
-  let skyEnergy = 0;
   const cameraHome = {
     y: camera.position.y,
     z: camera.position.z,
@@ -1423,16 +1445,24 @@ async function initTrails(){
       streamRhythm = Math.max(streamRhythm, 0.22);
       lastBeatVal = 0;
     },
-    render(dt, bass, mid, hi, beat, hit = 0, accent = 0, speed = 0){
+    render(dt, bass, mid, hi, beat, hit = 0, accent = 0, speed = 0, melody = 0){
       // beat: instant attack, fast release
       if (beat > envBeat) envBeat = beat;
       else envBeat *= Math.pow(0.22, dt);
       const beatRising = Math.max(hit, beat - lastBeatVal, 0);
       hitPulse = Math.max(hitPulse * Math.pow(0.05, dt), beatRising);
       accentPulse = Math.max(accentPulse * Math.pow(0.05, dt), accent);
+      // Melody envelope: tracks sustained melodic energy (violin, vocals, pads)
+      // that has little transient content so the beat path stays near zero.
+      // Fast attack, slow release so swells linger long enough to read visually.
+      const melodyTarget = Math.min(1, melody * 1.15 + Math.max(0, mid - bass * 0.55) * 0.30);
+      const kAttackMel = Math.min(1, dt * 9.0);
+      const kReleaseMel = Math.min(1, dt * 1.6);
+      melodyEnv += (melodyTarget - melodyEnv) * (melodyTarget > melodyEnv ? kAttackMel : kReleaseMel);
+      melodyFlow += (melodyEnv - melodyFlow) * Math.min(1, dt * 0.85);
       lastBeatVal = beat;
       const overall = (bass + mid + hi) / 3;
-      streamRhythm = Math.max(streamRhythm * Math.pow(0.15, dt), Math.min(1, envBeat * 0.90 + hitPulse * 1.40));
+      streamRhythm = Math.max(streamRhythm * Math.pow(0.15, dt), Math.min(1, envBeat * 0.90 + hitPulse * 1.40 + melodyEnv * 0.55));
       const speedHit = Math.min(1, Math.max(speed, beatRising));
       speedPulse = Math.max(speedPulse * Math.pow(0.0000007, dt), speedHit);
       const grooveTarget = Math.min(1, speedPulse * 0.34);
@@ -1441,7 +1471,6 @@ async function initTrails(){
       const speedDrive = Math.min(1, speedPulse * 0.92 + speedGroove * 0.18);
       rhythmClock += dt * (0.8 + streamRhythm * 4.6) + beatRising * 1.65;
       skyFlowTime += dt * (0.12 + overall * 0.03);
-      skyEnergy += (Math.min(1, overall * 1.5 + streamRhythm * 0.18 + accentPulse * 0.14) - skyEnergy) * Math.min(1, dt * 1.8);
       const globalPulse = Math.min(1, streamRhythm * 0.75 + overall * 0.16);
       bloomPass.strength = cfg.bloomStrength + globalPulse * 0.22 + hi * 0.02;
       blurPass.uniforms.blurStrength.value = cfg.blurStrength * (0.82 + streamRhythm * 0.12 + hi * 0.08);
@@ -1450,9 +1479,6 @@ async function initTrails(){
       camera.position.z = cameraHome.z - streamRhythm * 3.2 - bass * 2.0;
       camera.lookAt(0, cameraHome.lookY + streamRhythm * 0.7, cameraHome.lookZ);
       skyMat.uniforms.uTime.value = skyFlowTime;
-      skyMat.uniforms.uRhythm.value = skyEnergy;
-      skyMat.uniforms.uBass.value = bass * 0.35;
-      skyMat.uniforms.uHi.value = hi;
       skyMat.uniforms.uAspect.value = window.innerWidth / Math.max(1, window.innerHeight);
       skyPlane.position.y = 82;
 
@@ -1489,25 +1515,26 @@ async function initTrails(){
           const mainU = trailMaterials[i*2];
           const refU = trailMaterials[i*2+1];
 
-          mainU.uRhythm.value = rhythm + noteAccent * 0.18;
-          refU.uRhythm.value = rhythm * 0.40 + noteAccent * 0.08;
+          const melodyTrail = melodyEnv * (0.92 + Math.sin(i * 0.43 + rhythmClock * 0.6) * 0.08);
+          mainU.uRhythm.value = rhythm + noteAccent * 0.18 + melodyTrail * 0.32;
+          refU.uRhythm.value = rhythm * 0.40 + noteAccent * 0.08 + melodyTrail * 0.14;
           mainU.uBeat.value = hitAccent + noteAccent * 0.14;
           refU.uBeat.value = hitAccent * 0.30 + noteAccent * 0.06;
-          mainU.uDotSize.value = cfg.dotSize * (0.92 + rhythm * 0.22 + hitAccent * 0.28 + noteAccent * 0.14 + hi * 0.06);
-          refU.uDotSize.value = cfg.dotSize * (0.62 + rhythm * 0.12 + noteAccent * 0.06);
-          mainU.uDotSpeed.value = cfg.dotSpeed * (0.70 + rhythm * 0.42 + speedAccent * 1.65 + hitAccent * 0.45 + noteAccent * 0.32);
-          refU.uDotSpeed.value = cfg.dotSpeed * (0.62 + rhythm * 0.24 + speedAccent * 0.55 + noteAccent * 0.10);
-          mainU.uBrightness.value = cfg.brightness * (0.24 + lv*0.22 + rhythm*0.38 + hitAccent*0.32 + noteAccent*0.08);
-          refU.uBrightness.value = cfg.brightness * (0.12 + lv*0.10 + rhythm*0.16 + hitAccent*0.12 + noteAccent*0.03);
-          mainU.uIntensityMultiplier.value = 0.70 + hitAccent*0.24 + noteAccent*0.05 + lv*0.06 + rhythm*0.22;
-          refU.uIntensityMultiplier.value = 0.28 + hitAccent*0.10 + noteAccent*0.02 + lv*0.03 + rhythm*0.09;
+          mainU.uDotSize.value = cfg.dotSize * (0.92 + rhythm * 0.22 + hitAccent * 0.28 + noteAccent * 0.14 + melodyTrail * 0.18 + hi * 0.06);
+          refU.uDotSize.value = cfg.dotSize * (0.62 + rhythm * 0.12 + noteAccent * 0.06 + melodyTrail * 0.08);
+          mainU.uDotSpeed.value = cfg.dotSpeed * (0.70 + rhythm * 0.42 + speedAccent * 1.65 + hitAccent * 0.45 + noteAccent * 0.32 + melodyFlow * 0.55);
+          refU.uDotSpeed.value = cfg.dotSpeed * (0.62 + rhythm * 0.24 + speedAccent * 0.55 + noteAccent * 0.10 + melodyFlow * 0.22);
+          mainU.uBrightness.value = cfg.brightness * (0.18 + rhythm*0.26 + hitAccent*0.22 + noteAccent*0.04 + melodyTrail*0.22 + lv*0.04);
+          refU.uBrightness.value = cfg.brightness * (0.09 + rhythm*0.11 + hitAccent*0.08 + noteAccent*0.01 + melodyTrail*0.10 + lv*0.02);
+          mainU.uIntensityMultiplier.value = 0.58 + rhythm*0.16 + hitAccent*0.16 + noteAccent*0.02 + melodyTrail*0.14 + lv*0.03;
+          refU.uIntensityMultiplier.value = 0.24 + rhythm*0.07 + hitAccent*0.06 + noteAccent*0.01 + melodyTrail*0.06 + lv*0.01;
 
           // Per-trail speed surges on shared beat hits; bin level only adds texture.
           const baseSpeed = trailObjects[i].baseSpeed;
           const lvShaped  = Math.pow(lv, 0.35);
           const overallShaped = Math.pow(overall, 0.45);
           const minFlowSpeed = baseSpeed * 0.13;
-          const targetSpeed = baseSpeed * (0.070 + overallShaped * 0.14 + rhythm * 0.62 + speedAccent * 4.90 + hitAccent * 0.28 + noteAccent * 0.16 + lvShaped * 0.04);
+          const targetSpeed = baseSpeed * (0.070 + overallShaped * 0.14 + rhythm * 0.62 + speedAccent * 4.90 + hitAccent * 0.28 + noteAccent * 0.16 + melodyFlow * 0.50 + lvShaped * 0.04);
           const kSpeed = targetSpeed > trailSpeeds[i] ? kSpeedUp : kSpeedDn;
           trailSpeeds[i] += (targetSpeed - trailSpeeds[i]) * kSpeed;
           trailPhases[i] += dt * Math.max(minFlowSpeed, trailSpeeds[i]) * 0.052;
@@ -2502,6 +2529,13 @@ let rmsFast = 0, rmsSlow = 0;
 let melodyFast = 0, melodySlow = 0;
 let beatEnv = 0, beatT = 999, pulseClock = 0, pulseVel = 0, lastFrameT = performance.now();
 let beatSpecPrev = null, fluxSlow = 0, onsetAvg = 0, onsetDev = 0, drumAvg = 0, drumDev = 0, beatPeriod = 0.48, beatConfidence = 0;
+// Comb-filter tempo tracker: ring buffer of recent spectral-flux ODF samples,
+// re-scored every COMB_INTERVAL frames to find the dominant beat period.
+const ODF_LEN = 360;
+const odfBuf = new Float32Array(ODF_LEN);
+let odfWrite = 0, odfFilled = 0, odfDtAvg = 1 / 60;
+let combPeriod = 0.48, combConfidence = 0, combCounter = 0;
+const COMB_INTERVAL = 12;
 let startupBoost = 0, startupSeedFrames = 0;
 const start = performance.now();
 
@@ -2665,6 +2699,49 @@ function frame() {
   const rmsTransient = Math.max(0, rmsFast - rmsSlow * 1.08);
   fluxSlow += (spectralFlux - fluxSlow) * 0.045;
   const fluxTransient = Math.max(0, spectralFlux - fluxSlow * 1.12);
+
+  // Comb-filter tempo tracking. Push the current ODF (spectral flux) sample
+  // into a ring buffer, then every COMB_INTERVAL frames score candidate
+  // beat periods 0.28..1.05 s and pick the lag whose comb sum is highest.
+  // A log-Gaussian prior around the current estimate suppresses octave jumps.
+  odfBuf[odfWrite] = spectralFlux;
+  odfWrite = (odfWrite + 1) % ODF_LEN;
+  if (odfFilled < ODF_LEN) odfFilled++;
+  odfDtAvg += (dt - odfDtAvg) * 0.06;
+  combCounter++;
+  if (combCounter >= COMB_INTERVAL && odfFilled >= ODF_LEN * 0.55 && odfDtAvg > 0) {
+    combCounter = 0;
+    const samples = odfFilled;
+    const baseIdx = (odfWrite - 1 + ODF_LEN) % ODF_LEN;
+    let bestScore = 0, bestT = combPeriod, runnerUp = 0;
+    const tMin = 0.28, tMax = 1.05, tStep = 0.006;
+    for (let T = tMin; T <= tMax; T += tStep) {
+      const lag = Math.round(T / odfDtAvg);
+      if (lag < 4 || lag * 3 > samples) continue;
+      const K = Math.min(8, Math.floor(samples / lag));
+      if (K < 3) continue;
+      let score = 0;
+      for (let k = 1; k <= K; k++) {
+        score += odfBuf[(baseIdx - k * lag + ODF_LEN * 8) % ODF_LEN];
+      }
+      score /= K;
+      const ratio = Math.log(T / combPeriod);
+      const prior = Math.exp(-ratio * ratio * 5.5);
+      const weighted = score * (0.55 + 0.45 * prior);
+      if (weighted > bestScore) { runnerUp = bestScore; bestScore = weighted; bestT = T; }
+      else if (weighted > runnerUp) { runnerUp = weighted; }
+    }
+    const margin = bestScore > 0 ? (bestScore - runnerUp) / bestScore : 0;
+    const rawConf = Math.min(1, bestScore * 22) * (0.5 + 0.5 * margin);
+    combConfidence += (rawConf - combConfidence) * 0.35;
+    const kPull = combConfidence > 0.30 ? 0.55 : 0.20;
+    combPeriod += (bestT - combPeriod) * kPull;
+    combPeriod = Math.max(tMin, Math.min(tMax, combPeriod));
+    if (combConfidence > 0.25) {
+      beatPeriod += (combPeriod - beatPeriod) * 0.50;
+      beatConfidence = Math.max(beatConfidence, combConfidence * 0.88);
+    }
+  }
   const transient = Math.max(
     bassTransient,
     midTransient * 0.95,
@@ -2735,7 +2812,7 @@ function frame() {
     if (detectedBeat && interval > 0.24 && interval < 1.05) {
       const periodErr = interval - beatPeriod;
       beatPeriod += periodErr * (beatConfidence > 0.45 ? 0.18 : 0.32);
-      beatPeriod = Math.max(0.28, Math.min(0.82, beatPeriod));
+      beatPeriod = Math.max(0.28, Math.min(1.05, beatPeriod));
       beatConfidence = Math.min(1, beatConfidence + 0.24);
     } else if (predictedBeat) {
       beatConfidence = Math.max(0, beatConfidence * 0.96 - 0.015);
@@ -2771,7 +2848,7 @@ function frame() {
   if (EFFECTS[curEffect].external === 'trails') {
     const renderBeat = Math.max(beatEnv, warmStart * 0.16);
     const renderHit = Math.max(beatHit, warmStart * 0.12);
-    if (trailsApi) trailsApi.render(dt, smoothBass, smoothMid, smoothHi, renderBeat, renderHit, instrumentAccent, speedCue);
+    if (trailsApi) trailsApi.render(dt, smoothBass, smoothMid, smoothHi, renderBeat, renderHit, instrumentAccent, speedCue, melodicSustain);
     requestAnimationFrame(frame);
     return;
   }
