@@ -101,7 +101,16 @@
     font-size: 11px; font-weight: 600;
     letter-spacing: 1.4px; text-transform: uppercase;
     color: var(--muted);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px;
   }
+  .playlist h3 .sort {
+    background: none; border: 0; color: var(--muted); cursor: pointer;
+    font-size: 10px; font-weight: 600;
+    letter-spacing: 1px; text-transform: uppercase;
+    padding: 2px 6px; border-radius: 6px;
+  }
+  .playlist h3 .sort:hover { color: #fff; background: rgba(255,255,255,0.08); }
   .track {
     display: flex; align-items: center; gap: 10px;
     padding: 8px 10px;
@@ -355,7 +364,10 @@
 
     <div style="display:grid; grid-template-columns: 1fr auto; gap: 12px; align-items: end;">
       <div class="playlist" id="playlist">
-        <h3>Playlist</h3>
+        <h3>
+          <span>Playlist</span>
+          <button class="sort" id="sortBtn" title="Sort by name">Sort A–Z</button>
+        </h3>
         <div class="empty" id="empty">No tracks yet — drop MP3s here.</div>
         <div id="tracks"></div>
       </div>
@@ -1162,7 +1174,10 @@ async function initTrails(){
     side: THREE.DoubleSide,
     uniforms: {
       uTime: { value: 0 },
-      uAspect: { value: window.innerWidth / Math.max(1, window.innerHeight) }
+      uAspect: { value: window.innerWidth / Math.max(1, window.innerHeight) },
+      uBeat: { value: 0 },     // instant beat attack (hitPulse)
+      uBeatEnv: { value: 0 },  // smoothed beat envelope (envBeat)
+      uBass: { value: 0 },     // bass level
     },
     vertexShader: `
       varying vec2 vUv;
@@ -1175,6 +1190,9 @@ async function initTrails(){
       varying vec2 vUv;
       uniform float uTime;
       uniform float uAspect;
+      uniform float uBeat;
+      uniform float uBeatEnv;
+      uniform float uBass;
 
       float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
       float noise(vec2 p){
@@ -1240,7 +1258,9 @@ async function initTrails(){
         float q = fbm(pp - t);
         float r = fbm(pp + q + vec2(1.7, 9.2) + 0.15 * t);
         float f = fbm(pp + r);
-        f = pow(f, 3.0);
+        // Bass softens the density power slightly, blooming the clouds on heavy bass.
+        float densityPow = 3.0 - uBass * 0.30 - uBeatEnv * 0.10;
+        f = pow(f, max(2.4, densityPow));
 
         // Independent hue field, slowly varying, so neighbouring structure
         // picks different palette colours. The density (f) controls "where"
@@ -1266,22 +1286,23 @@ async function initTrails(){
         // Density accumulation — same as source, just using the colourful base.
         vec3 nebulaColor = baseHue * (f + f*f + f*f*f);
 
-        // Strong saturation boost.
+        // Strong saturation boost; beats nudge it a touch.
         float nebLum = dot(nebulaColor, vec3(0.299, 0.587, 0.114));
-        nebulaColor = mix(vec3(nebLum), nebulaColor, 2.20);
+        nebulaColor = mix(vec3(nebLum), nebulaColor, 2.20 + uBeat * 0.20);
         nebulaColor = max(nebulaColor, vec3(0.0));
-        // Proportional brightness cap, raised so vivid regions are clearly
-        // visible. Goes a bit over bloom threshold (0.35) — bright pink/cyan
-        // peaks will bloom slightly, which actually helps them read as "glow"
-        // rather than flat color.
+        // Proportional brightness cap; beats lift it slightly so peaks bloom a bit more.
+        float capLift = 0.55 + uBeat * 0.12 + uBeatEnv * 0.05;
         float maxC = max(nebulaColor.r, max(nebulaColor.g, nebulaColor.b));
-        nebulaColor *= 0.55 / max(0.55, maxC);
+        nebulaColor *= capLift / max(capLift, maxC);
 
-        vec3 col = nebulaColor + starColor;
+        // Stars get a subtle twinkle boost on beats.
+        vec3 col = nebulaColor + starColor * (1.0 + uBeat * 0.30);
         col *= vec3(1.0, 0.9, 1.2);  // source's magenta cast
 
         col *= skyMask;
         col *= 1.0 - horizonFade * 0.32;
+        // Subtle beat sheen on top.
+        col *= 1.0 + uBeat * 0.10 + uBeatEnv * 0.04;
 
         float alpha = clamp(max(max(col.r, col.g), col.b) * 1.20, 0.0, 0.95) * skyMask;
         gl_FragColor = vec4(col, alpha);
@@ -1557,6 +1578,9 @@ async function initTrails(){
       camera.lookAt(0, cameraHome.lookY + streamRhythm * 0.7, cameraHome.lookZ);
       skyMat.uniforms.uTime.value = skyFlowTime;
       skyMat.uniforms.uAspect.value = window.innerWidth / Math.max(1, window.innerHeight);
+      skyMat.uniforms.uBeat.value = Math.min(1, hitPulse);
+      skyMat.uniforms.uBeatEnv.value = Math.min(1, envBeat);
+      skyMat.uniforms.uBass.value = Math.min(1, bass);
       skyPlane.position.y = 82;
 
       // palette phase: slow drift + faster sweep when music is loud, +kicks on beats
@@ -1877,6 +1901,11 @@ const Player = (() => {
   let volume = 0.85;
   let pendingUrl = null;    // object URL of the active Howl, revoked on unload
   let onPlay = null, onPause = null, onEnded = null;
+  // Set whenever Howler.ctx ever transitions to 'interrupted' or 'suspended'.
+  // On WebKit/Safari the context can come back to 'running' while its hardware
+  // output binding stays dead — i.e. UI says playing, speakers silent. Once we
+  // see the interrupt we fully rebuild the audio graph on the next loadBlob.
+  let needsRebuild = false;
 
   function hookAnalyser() {
     if (typeof Howler === 'undefined' || !Howler.ctx || !Howler.masterGain) return;
@@ -1910,10 +1939,57 @@ const Player = (() => {
 
   function onCtxStateChange() {
     if (!Howler || !Howler.ctx) return;
-    if (Howler.ctx.state === 'running') {
+    const s = Howler.ctx.state;
+    console.log('[audio] ctx statechange ->', s);
+    if (s === 'interrupted' || s === 'suspended' || s === 'closed') {
+      needsRebuild = true;
+    }
+    if (s === 'running') {
       hookAnalyser();
       nudgeSource();
     }
+  }
+
+  // Tear down Howler's AudioContext and rebuild it from scratch. After a
+  // WebKit audio-focus interruption the existing ctx (and any BufferSource
+  // attached to it) can be silently dead even though state() reads 'running'.
+  // Closing and recreating the ctx + masterGain is the only reliable recovery.
+  // Howler 2.2.x doesn't expose a re-runnable setup hook, so we build the
+  // replacement ctx + masterGain manually and assign them onto Howler — any
+  // subsequent `new Howl({html5:false})` will pick them up.
+  function rebuildContext() {
+    console.log('[audio] rebuildContext: starting');
+    unloadCurrent();
+    if (typeof Howler === 'undefined') return;
+    try { Howler.unload(); } catch {}
+    const oldCtx = Howler.ctx;
+    try { if (oldCtx && typeof oldCtx.close === 'function') oldCtx.close(); } catch {}
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) {
+      needsRebuild = false;
+      return;
+    }
+    const ctx = new AC();
+    const masterGain = ctx.createGain();
+    masterGain.gain.value = (typeof Howler !== 'undefined' && typeof Howler.volume === 'function')
+      ? Howler.volume() : volume;
+    masterGain.connect(ctx.destination);
+    Howler.ctx = ctx;
+    Howler.masterGain = masterGain;
+    Howler.usingWebAudio = true;
+    // We're typically called inside a user-gesture click handler. Kick the
+    // brand-new ctx to 'running' right away so the next Howl can play.
+    try { ctx.resume(); } catch {}
+    // Reset Howler's autoUnlocked flag so it re-runs gesture unlock on the new
+    // ctx if needed. Best-effort; property may not exist on every Howler build.
+    try { Howler.autoUnlock && (Howler._audioUnlocked = false); } catch {}
+    analyser = null;
+    analyserHooked = false;
+    hookAnalyser();
+    try { ctx.addEventListener('statechange', onCtxStateChange); } catch {}
+    ctx._mvStateBound = true;
+    needsRebuild = false;
+    console.log('[audio] rebuildContext: done, ctx.state =', ctx.state);
   }
 
   function unloadCurrent() {
@@ -1966,10 +2042,16 @@ const Player = (() => {
       setTimeout(() => { if (ctx.state === 'running') apply(); }, 80);
       setTimeout(() => { if (ctx.state === 'running') apply(); }, 300);
     },
+    get needsRebuild() { return needsRebuild; },
+    markRebuild() { needsRebuild = true; },
     hardResetSync() { unloadCurrent(); },  // Howler manages ctx itself
 
     loadBlob(blob) {
       const myId = ++pendingSrc;
+      // If we previously observed an interruption, rebuild the entire audio
+      // graph before creating a new Howl. The old ctx and masterGain may be
+      // silently dead even though state() now reads 'running'.
+      if (needsRebuild) rebuildContext();
       unloadCurrent();
       const url = URL.createObjectURL(blob);
       pendingUrl = url;
@@ -2361,11 +2443,12 @@ async function parseMp3Metadata(blob) {
     ? new Uint8Array(await blob.slice(blob.size - 128, blob.size).arrayBuffer())
     : headBuf;
 
-  const id3v2 = parseId3v2(headBuf);
-  const id3v1 = parseId3v1(tailBuf);
+  let id3v2 = null, id3v1 = null, frame = null, xing = null;
+  try { id3v2 = parseId3v2(headBuf); } catch (e) { console.warn('ID3v2 parse failed', e); }
+  try { id3v1 = parseId3v1(tailBuf); } catch (e) { console.warn('ID3v1 parse failed', e); }
   const frameStart = id3v2 ? id3v2.size : 0;
-  const frame = parseMpegFrame(headBuf, frameStart);
-  const xing = frame ? parseXingLame(headBuf, frame) : null;
+  try { frame = parseMpegFrame(headBuf, frameStart); } catch (e) { console.warn('MPEG frame parse failed', e); }
+  try { xing = frame ? parseXingLame(headBuf, frame) : null; } catch (e) { console.warn('Xing/LAME parse failed', e); }
 
   let duration = null;
   if (frame) {
@@ -2420,7 +2503,8 @@ async function showTrackInfo(i) {
   try {
     meta = await parseMp3Metadata(t.blob);
   } catch (err) {
-    infoBodyEl.innerHTML = `<div class="info-empty">Failed to read file: ${escapeHtml(err.message || String(err))}</div>`;
+    console.error('parseMp3Metadata failed', err);
+    infoBodyEl.innerHTML = `<div class="info-empty">Failed to read file: ${escapeHtml(err && (err.message || err.name) || String(err))}</div>`;
     return;
   }
 
@@ -2695,6 +2779,15 @@ function toggleLike(i) {
   renderPlaylist();
 }
 
+function sortPlaylistByName() {
+  if (tracks.length < 2) return;
+  const currentTrack = current >= 0 ? tracks[current] : null;
+  const coll = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
+  tracks.sort((a, b) => coll.compare(a.name, b.name));
+  if (currentTrack) current = tracks.indexOf(currentTrack);
+  renderPlaylist();
+}
+
 function removeTrack(i) {
   const wasCurrent = i === current;
   URL.revokeObjectURL(tracks[i].url);
@@ -2776,12 +2869,15 @@ async function playIndex(i) {
 }
 
 function togglePlay() {
+  console.log('[audio] togglePlay: current=', current, 'state=', Player.state, 'needsRebuild=', Player.needsRebuild, 'paused=', Player.paused, 'hasBuffer=', Player.hasBuffer);
   if (current === -1) {
     if (tracks.length) playIndex(0);
     return;
   }
-  if (Player.state === 'interrupted' || Player.state === 'closed') {
-    Player.hardResetSync();
+  // A previous tab interruption flagged the AudioContext as dead. We're inside
+  // a click handler — a real user gesture — so reloading via playIndex now
+  // routes through rebuildContext() and the fresh ctx can be resumed.
+  if (Player.needsRebuild || Player.state === 'interrupted' || Player.state === 'closed') {
     playIndex(current);
     return;
   }
@@ -2793,6 +2889,7 @@ function togglePlay() {
   Player.togglePlay();
 }
 
+document.getElementById('sortBtn').addEventListener('click', sortPlaylistByName);
 playBtn.addEventListener('click', togglePlay);
 prevBtn.addEventListener('click', () => { const n = pickNext(-1); if (n >= 0) playIndex(n); });
 nextBtn.addEventListener('click', () => { const n = pickNext( 1); if (n >= 0) playIndex(n); });
@@ -2986,19 +3083,32 @@ function syncFsIcon() {
 document.addEventListener('fullscreenchange', syncFsIcon);
 document.addEventListener('webkitfullscreenchange', syncFsIcon);
 
-// Resume the AudioContext when the tab regains focus and rebuild the audio
-// graph if needed. Browsers (and the OS, on iOS/macOS especially) suspend or
-// 'interrupt' a context when another tab takes audio focus. After such an
-// interruption WebKit can return ctx.state to 'running' while leaving the
-// already-attached BufferSource silently muted, which manifests as "player
-// works, timer advances, no audio". Player.recover() re-applies our analyser
-// splice and re-seeks the current Howl to spawn a fresh BufferSource.
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') {
-    try { Player.recover(); } catch {}
+// Resume the AudioContext when the tab regains focus, and — if we ever
+// observed an interruption ('interrupted' / 'suspended' / 'closed') — fully
+// rebuild Howler's context and reload the current track. On WebKit the
+// context can return to 'running' with a dead hardware output binding, so
+// resume() + seek-nudging the existing source isn't enough; the audio graph
+// must be torn down and recreated. Reloading the current track via
+// playIndex(current) routes through Player.loadBlob which performs the
+// rebuild before instantiating the new Howl.
+function onTabVisible() {
+  console.log('[audio] tab visible: ctx.state =', Player.state, 'needsRebuild =', Player.needsRebuild, 'paused =', Player.paused);
+  // Soft path: try to nudge the existing graph back to life (cheap; works
+  // when the browser kept the ctx and hardware binding alive).
+  try { Player.recover(); } catch {}
+  // Hard path: if an interruption was observed, the AudioContext is likely
+  // dead and a rebuild is required. We can't rebuild here — visibilitychange
+  // is NOT a user gesture, so the fresh ctx would start 'suspended' and
+  // ctx.resume() would fail. Pause the UI to make it obvious the user needs
+  // to click play; togglePlay handles the rebuild inside that gesture stack.
+  if (Player.needsRebuild && current >= 0) {
+    try { Player.pause(); } catch {}
   }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') onTabVisible();
 });
-window.addEventListener('focus', () => { try { Player.recover(); } catch {} });
+window.addEventListener('focus', onTabVisible);
 
 // Keyboard
 window.addEventListener('keydown', (e) => {
@@ -3078,7 +3188,11 @@ function frame() {
   let melodicPeak = 0, melodicEnergy = 0, melodicContrast = 0;
   const analyser = Player.analyser;
   if (analyser) {
-    const targetSmoothing = EFFECTS[curEffect].external === 'trails' ? 0.34 : 0.82;
+    // Lower = more responsive to transients (less averaging with prior frames).
+    // 0.55 keeps shader visuals readable while cutting ~150ms of perceived lag
+    // versus the old 0.82. Trails has its own attack/release envelopes and runs
+    // its analyser tighter still.
+    const targetSmoothing = EFFECTS[curEffect].external === 'trails' ? 0.34 : 0.55;
     if (Math.abs(analyser.smoothingTimeConstant - targetSmoothing) > 0.001) {
       analyser.smoothingTimeConstant = targetSmoothing;
     }
@@ -3152,11 +3266,16 @@ function frame() {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, 256, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, specBytes);
   }
 
-  const k = 0.18;
+  // Per-frame low-pass on the band envelopes. Higher k = more responsive.
+  // 0.35 leaves enough averaging to mask single-frame FFT jitter but locks
+  // visibly tighter to the beat than the previous 0.18.
+  const k = 0.35;
   smoothBass += (bass - smoothBass) * k;
   smoothMid += (mid - smoothMid) * k;
   smoothHi += (hi - smoothHi) * k;
-  smoothLevel += (level - smoothLevel) * 0.10;
+  // smoothLevel stays slower — it drives ambient/overall energy uniforms
+  // where a gentle envelope reads better than a snappy one.
+  smoothLevel += (level - smoothLevel) * 0.18;
   if (startupSeedFrames > 0 && (level > 0.004 || waveRms > 0.004)) {
     const seedK = 0.72;
     smoothBass += (bass - smoothBass) * seedK;
