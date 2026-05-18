@@ -44,6 +44,12 @@ app doesn't need to maintain those workarounds itself.
 ### Per-track
 
 - **♡ / ♥** — like a track (persisted with the track).
+- **ⓘ** — open an info modal with the file's stored MP3 metadata: MPEG
+  frame header (version, layer, bitrate, sample rate, channels, encoder
+  string, frame count, CBR vs. VBR), ID3v2 frames (title / artist / album /
+  year / track / genre / BPM / comment …) with embedded APIC cover art if
+  present, and the trailing ID3v1 tag. Parsed in-browser from the stored
+  Blob — no extra dependencies.
 - **✕** — remove from playlist.
 - Click anywhere on the row to play.
 
