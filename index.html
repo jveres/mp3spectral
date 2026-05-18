@@ -1135,7 +1135,12 @@ async function initTrails(){
         // instead of being clipped to a thin upper sliver.
         float upper = smoothstep(0.05, 0.22, vUv.y);
         float horizonFade = 1.0 - smoothstep(0.0, 0.18, vUv.y);
-        float skyMask = upper;
+        // Hide the sky in the central column where the trail streams live,
+        // so stars/nebula only show in the left/right empty space. The sky
+        // plane is wider than the camera view, so the visible vUv.x range is
+        // only ~0.33..0.67 — these thresholds must be tight.
+        float sideMask = smoothstep(0.05, 0.11, abs(vUv.x - 0.5));
+        float skyMask = upper * sideMask;
         if (skyMask < 0.001) { gl_FragColor = vec4(0.0); return; }
 
         float tDrift = uTime * 0.012;
