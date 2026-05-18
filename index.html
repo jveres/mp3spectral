@@ -130,6 +130,67 @@
     color: var(--muted); text-align: center; padding: 16px 12px; font-size: 13px;
   }
 
+  .info-modal {
+    position: fixed; inset: 0;
+    background: rgba(5, 8, 18, 0.6);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 20;
+  }
+  .info-modal.show { display: flex; }
+  .info-card {
+    width: min(560px, 92vw);
+    max-height: 80vh;
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border-radius: 14px;
+    padding: 18px 20px;
+    color: var(--text);
+    font-size: 13px;
+  }
+  .info-card header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-bottom: 12px;
+  }
+  .info-card h3 {
+    margin: 0; font-size: 13px; font-weight: 600;
+    letter-spacing: 1px; text-transform: uppercase; color: var(--muted);
+  }
+  .info-card .close {
+    background: none; border: 0; color: var(--muted); cursor: pointer;
+    font-size: 18px; padding: 2px 8px; border-radius: 6px;
+  }
+  .info-card .close:hover { color: #fff; background: rgba(255,255,255,0.08); }
+  .info-card .filename {
+    font-weight: 600; color: #fff; margin-bottom: 14px;
+    word-break: break-word;
+  }
+  .info-section {
+    margin-bottom: 14px;
+  }
+  .info-section h4 {
+    margin: 0 0 6px; font-size: 11px; font-weight: 600;
+    letter-spacing: 1.2px; text-transform: uppercase;
+    color: var(--accent);
+  }
+  .info-grid {
+    display: grid;
+    grid-template-columns: 130px 1fr;
+    gap: 4px 12px;
+  }
+  .info-grid .k { color: var(--muted); }
+  .info-grid .v { color: var(--text); word-break: break-word; }
+  .info-cover {
+    display: block; max-width: 160px; max-height: 160px;
+    border-radius: 8px; margin: 6px 0 4px;
+  }
+  .info-empty { color: var(--muted); font-style: italic; }
+
   .player {
     align-self: end;
     width: 100%;
@@ -338,6 +399,17 @@
 
   <div class="drop-overlay" id="drop">
     <div class="drop-card">Drop MP3s to add to playlist</div>
+  </div>
+
+  <div class="info-modal" id="infoModal" role="dialog" aria-modal="true" aria-label="MP3 file info">
+    <div class="info-card">
+      <header>
+        <h3>MP3 Info</h3>
+        <button class="close" id="infoClose" title="Close">✕</button>
+      </header>
+      <div class="filename" id="infoName"></div>
+      <div id="infoBody"></div>
+    </div>
   </div>
 
 <script type="module">
@@ -1993,6 +2065,7 @@ function renderPlaylist() {
       <button class="like ${t.liked ? 'on' : ''}" title="${t.liked ? 'Unlike' : 'Like'}">${t.liked ? '♥' : '♡'}</button>
       <span class="name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span>
       <span class="dur">${fmtTime(t.dur)}</span>
+      <button class="info" title="Show MP3 info">ⓘ</button>
       <button class="rm" title="Remove">✕</button>
     `;
     row.addEventListener('click', (e) => {
@@ -2002,6 +2075,10 @@ function renderPlaylist() {
     row.querySelector('button.like').addEventListener('click', (e) => {
       e.stopPropagation();
       toggleLike(i);
+    });
+    row.querySelector('button.info').addEventListener('click', (e) => {
+      e.stopPropagation();
+      showTrackInfo(i);
     });
     row.querySelector('button.rm').addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2013,6 +2090,369 @@ function renderPlaylist() {
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ---- MP3 metadata parser (ID3v2, ID3v1, MPEG frame header, Xing/Info/LAME) ----
+const MP3_BITRATES_V1L3 = [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0];
+const MP3_BITRATES_V2L3 = [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0];
+const MP3_SAMPLERATES = {
+  3: [44100, 48000, 32000], // MPEG 1
+  2: [22050, 24000, 16000], // MPEG 2
+  0: [11025, 12000, 8000],  // MPEG 2.5
+};
+const MP3_CHANNEL_MODES = ['Stereo', 'Joint Stereo', 'Dual Channel', 'Mono'];
+
+const ID3V1_GENRES = [
+  'Blues','Classic Rock','Country','Dance','Disco','Funk','Grunge','Hip-Hop','Jazz','Metal',
+  'New Age','Oldies','Other','Pop','R&B','Rap','Reggae','Rock','Techno','Industrial',
+  'Alternative','Ska','Death Metal','Pranks','Soundtrack','Euro-Techno','Ambient','Trip-Hop','Vocal','Jazz+Funk',
+  'Fusion','Trance','Classical','Instrumental','Acid','House','Game','Sound Clip','Gospel','Noise',
+  'AlternRock','Bass','Soul','Punk','Space','Meditative','Instrumental Pop','Instrumental Rock','Ethnic','Gothic',
+  'Darkwave','Techno-Industrial','Electronic','Pop-Folk','Eurodance','Dream','Southern Rock','Comedy','Cult','Gangsta',
+  'Top 40','Christian Rap','Pop/Funk','Jungle','Native American','Cabaret','New Wave','Psychadelic','Rave','Showtunes',
+  'Trailer','Lo-Fi','Tribal','Acid Punk','Acid Jazz','Polka','Retro','Musical','Rock & Roll','Hard Rock'
+];
+
+function decodeId3Text(bytes, encoding) {
+  if (!bytes || !bytes.length) return '';
+  try {
+    if (encoding === 0) return new TextDecoder('iso-8859-1').decode(bytes).replace(/\0+$/, '');
+    if (encoding === 1) {
+      // UTF-16 with BOM
+      let be = false;
+      let start = 0;
+      if (bytes.length >= 2) {
+        if (bytes[0] === 0xFE && bytes[1] === 0xFF) { be = true; start = 2; }
+        else if (bytes[0] === 0xFF && bytes[1] === 0xFE) { be = false; start = 2; }
+      }
+      return new TextDecoder(be ? 'utf-16be' : 'utf-16le').decode(bytes.subarray(start)).replace(/\0+$/, '');
+    }
+    if (encoding === 2) return new TextDecoder('utf-16be').decode(bytes).replace(/\0+$/, '');
+    if (encoding === 3) return new TextDecoder('utf-8').decode(bytes).replace(/\0+$/, '');
+  } catch {}
+  return '';
+}
+
+function readSynchsafe(buf, off) {
+  return ((buf[off] & 0x7F) << 21) | ((buf[off+1] & 0x7F) << 14) | ((buf[off+2] & 0x7F) << 7) | (buf[off+3] & 0x7F);
+}
+
+function parseId3v2(buf) {
+  if (buf.length < 10) return null;
+  if (buf[0] !== 0x49 || buf[1] !== 0x44 || buf[2] !== 0x33) return null;
+  const major = buf[3];
+  const flags = buf[5];
+  const size = readSynchsafe(buf, 6);
+  const totalSize = size + 10;
+  const out = { version: `2.${major}.${buf[4]}`, size: totalSize, frames: {}, picture: null };
+
+  let pos = 10;
+  // Skip extended header
+  if (flags & 0x40) {
+    if (major === 4) {
+      const extSize = readSynchsafe(buf, pos);
+      pos += extSize;
+    } else {
+      const extSize = (buf[pos] << 24) | (buf[pos+1] << 16) | (buf[pos+2] << 8) | buf[pos+3];
+      pos += 4 + extSize;
+    }
+  }
+
+  const end = Math.min(totalSize, buf.length);
+  const frameIdLen = major >= 3 ? 4 : 3;
+  const frameHdrLen = major >= 3 ? 10 : 6;
+
+  while (pos + frameHdrLen <= end) {
+    if (buf[pos] === 0) break; // padding
+    let id, frameSize;
+    if (major >= 3) {
+      id = String.fromCharCode(buf[pos], buf[pos+1], buf[pos+2], buf[pos+3]);
+      if (major === 4) {
+        frameSize = readSynchsafe(buf, pos + 4);
+      } else {
+        frameSize = (buf[pos+4] << 24) | (buf[pos+5] << 16) | (buf[pos+6] << 8) | buf[pos+7];
+      }
+    } else {
+      id = String.fromCharCode(buf[pos], buf[pos+1], buf[pos+2]);
+      frameSize = (buf[pos+3] << 16) | (buf[pos+4] << 8) | buf[pos+5];
+    }
+    if (frameSize <= 0 || pos + frameHdrLen + frameSize > end) break;
+    const body = buf.subarray(pos + frameHdrLen, pos + frameHdrLen + frameSize);
+
+    if (id[0] === 'T' && id !== 'TXXX') {
+      const enc = body[0];
+      const text = decodeId3Text(body.subarray(1), enc);
+      out.frames[id] = text;
+    } else if (id === 'COMM' || id === 'USLT') {
+      // [enc][lang3][desc\0][text]
+      const enc = body[0];
+      // skip language (3 bytes), then descriptor
+      let p = 4;
+      // find terminator depending on enc
+      if (enc === 1 || enc === 2) {
+        while (p + 1 < body.length && !(body[p] === 0 && body[p+1] === 0)) p += 2;
+        p += 2;
+      } else {
+        while (p < body.length && body[p] !== 0) p++;
+        p += 1;
+      }
+      const text = decodeId3Text(body.subarray(p), enc);
+      out.frames[id] = text;
+    } else if (id === 'APIC' || id === 'PIC') {
+      const enc = body[0];
+      let p = 1;
+      let mime = 'image/jpeg';
+      if (id === 'APIC') {
+        let mEnd = p;
+        while (mEnd < body.length && body[mEnd] !== 0) mEnd++;
+        mime = new TextDecoder('iso-8859-1').decode(body.subarray(p, mEnd));
+        p = mEnd + 1;
+      } else {
+        const ext = new TextDecoder('iso-8859-1').decode(body.subarray(p, p+3));
+        mime = ext.toLowerCase() === 'png' ? 'image/png' : 'image/jpeg';
+        p += 3;
+      }
+      p += 1; // picture type
+      // skip description
+      if (enc === 1 || enc === 2) {
+        while (p + 1 < body.length && !(body[p] === 0 && body[p+1] === 0)) p += 2;
+        p += 2;
+      } else {
+        while (p < body.length && body[p] !== 0) p++;
+        p += 1;
+      }
+      const picData = body.subarray(p);
+      if (picData.length > 0 && !out.picture) {
+        out.picture = { mime, data: picData };
+      }
+    }
+
+    pos += frameHdrLen + frameSize;
+  }
+  return out;
+}
+
+function parseId3v1(buf) {
+  if (buf.length < 128) return null;
+  const off = buf.length - 128;
+  if (buf[off] !== 0x54 || buf[off+1] !== 0x41 || buf[off+2] !== 0x47) return null;
+  const dec = new TextDecoder('iso-8859-1');
+  const trim = (s) => s.replace(/\0.*$/, '').replace(/\s+$/, '');
+  const title = trim(dec.decode(buf.subarray(off+3, off+33)));
+  const artist = trim(dec.decode(buf.subarray(off+33, off+63)));
+  const album = trim(dec.decode(buf.subarray(off+63, off+93)));
+  const year = trim(dec.decode(buf.subarray(off+93, off+97)));
+  let comment, track;
+  if (buf[off+125] === 0 && buf[off+126] !== 0) {
+    comment = trim(dec.decode(buf.subarray(off+97, off+125)));
+    track = buf[off+126];
+  } else {
+    comment = trim(dec.decode(buf.subarray(off+97, off+127)));
+  }
+  const genreIdx = buf[off+127];
+  const genre = genreIdx < ID3V1_GENRES.length ? ID3V1_GENRES[genreIdx] : null;
+  return { title, artist, album, year, comment, track, genre };
+}
+
+function parseMpegFrame(buf, start) {
+  for (let i = start; i < buf.length - 4; i++) {
+    if (buf[i] === 0xFF && (buf[i+1] & 0xE0) === 0xE0) {
+      const b1 = buf[i+1], b2 = buf[i+2], b3 = buf[i+3];
+      const versionId = (b1 >> 3) & 0x03; // 0=v2.5, 2=v2, 3=v1
+      const layer = (b1 >> 1) & 0x03;     // 1=Layer III
+      const bitrateIdx = (b2 >> 4) & 0x0F;
+      const srIdx = (b2 >> 2) & 0x03;
+      const padding = (b2 >> 1) & 0x01;
+      const channelMode = (b3 >> 6) & 0x03;
+      if (versionId === 1 || layer === 0 || bitrateIdx === 0 || bitrateIdx === 15 || srIdx === 3) continue;
+      const bitrateTable = versionId === 3 ? MP3_BITRATES_V1L3 : MP3_BITRATES_V2L3;
+      const bitrate = bitrateTable[bitrateIdx] * 1000;
+      const sampleRate = MP3_SAMPLERATES[versionId][srIdx];
+      if (!bitrate || !sampleRate) continue;
+      const versionName = versionId === 3 ? 'MPEG-1' : versionId === 2 ? 'MPEG-2' : 'MPEG-2.5';
+      const layerName = layer === 1 ? 'Layer III' : layer === 2 ? 'Layer II' : 'Layer I';
+      return {
+        offset: i,
+        version: versionName,
+        layer: layerName,
+        bitrate,
+        sampleRate,
+        channelMode: MP3_CHANNEL_MODES[channelMode],
+        padding,
+        mpegVersionId: versionId,
+        channels: channelMode === 3 ? 1 : 2,
+      };
+    }
+  }
+  return null;
+}
+
+function parseXingLame(buf, frame) {
+  // Side info length depends on version+channels
+  const mono = frame.channels === 1;
+  const sideInfoLen = frame.mpegVersionId === 3 ? (mono ? 17 : 32) : (mono ? 9 : 17);
+  const tagOff = frame.offset + 4 + sideInfoLen;
+  if (tagOff + 8 > buf.length) return null;
+  const tag = String.fromCharCode(buf[tagOff], buf[tagOff+1], buf[tagOff+2], buf[tagOff+3]);
+  if (tag !== 'Xing' && tag !== 'Info') return null;
+  const flags = (buf[tagOff+4] << 24) | (buf[tagOff+5] << 16) | (buf[tagOff+6] << 8) | buf[tagOff+7];
+  let p = tagOff + 8;
+  const out = { tag, frames: null, bytes: null, vbr: tag === 'Xing', encoder: null };
+  if (flags & 0x01) { out.frames = (buf[p]<<24)|(buf[p+1]<<16)|(buf[p+2]<<8)|buf[p+3]; p += 4; }
+  if (flags & 0x02) { out.bytes  = (buf[p]<<24)|(buf[p+1]<<16)|(buf[p+2]<<8)|buf[p+3]; p += 4; }
+  if (flags & 0x04) p += 100; // TOC
+  if (flags & 0x08) p += 4;   // quality
+  // LAME tag starts at p (9 ASCII bytes like "LAME3.100")
+  if (p + 9 <= buf.length) {
+    const enc = new TextDecoder('iso-8859-1').decode(buf.subarray(p, p+9));
+    if (/^LAME|^lame/i.test(enc) || /^[A-Za-z]{4}\d/.test(enc)) out.encoder = enc.replace(/\0.*$/, '').trim();
+  }
+  return out;
+}
+
+async function parseMp3Metadata(blob) {
+  // Read up to first 256 KiB for ID3v2 + first frame, and last 128 bytes for ID3v1.
+  const headSize = Math.min(blob.size, 256 * 1024);
+  const headBuf = new Uint8Array(await blob.slice(0, headSize).arrayBuffer());
+  const tailBuf = blob.size > 128
+    ? new Uint8Array(await blob.slice(blob.size - 128, blob.size).arrayBuffer())
+    : headBuf;
+
+  const id3v2 = parseId3v2(headBuf);
+  const id3v1 = parseId3v1(tailBuf);
+  const frameStart = id3v2 ? id3v2.size : 0;
+  const frame = parseMpegFrame(headBuf, frameStart);
+  const xing = frame ? parseXingLame(headBuf, frame) : null;
+
+  let duration = null;
+  if (frame) {
+    if (xing && xing.frames) {
+      const samplesPerFrame = frame.mpegVersionId === 3 ? 1152 : 576;
+      duration = (xing.frames * samplesPerFrame) / frame.sampleRate;
+    } else {
+      // CBR estimate from file size minus ID3v2
+      const audioBytes = blob.size - frameStart - (id3v1 ? 128 : 0);
+      duration = (audioBytes * 8) / frame.bitrate;
+    }
+  }
+
+  return { id3v2, id3v1, frame, xing, duration, fileSize: blob.size };
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function renderInfoRows(pairs) {
+  return `<div class="info-grid">${pairs.map(([k, v]) =>
+    `<div class="k">${escapeHtml(k)}</div><div class="v">${v == null || v === '' ? '<span class="info-empty">—</span>' : escapeHtml(String(v))}</div>`
+  ).join('')}</div>`;
+}
+
+const infoModalEl = document.getElementById('infoModal');
+const infoNameEl = document.getElementById('infoName');
+const infoBodyEl = document.getElementById('infoBody');
+let infoCoverUrl = null;
+
+function closeInfoModal() {
+  infoModalEl.classList.remove('show');
+  if (infoCoverUrl) { URL.revokeObjectURL(infoCoverUrl); infoCoverUrl = null; }
+}
+
+document.getElementById('infoClose').addEventListener('click', closeInfoModal);
+infoModalEl.addEventListener('click', (e) => { if (e.target === infoModalEl) closeInfoModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && infoModalEl.classList.contains('show')) closeInfoModal(); });
+
+async function showTrackInfo(i) {
+  const t = tracks[i];
+  if (!t || !t.blob) return;
+  infoNameEl.textContent = t.name;
+  infoBodyEl.innerHTML = '<div class="info-empty">Reading…</div>';
+  infoModalEl.classList.add('show');
+  if (infoCoverUrl) { URL.revokeObjectURL(infoCoverUrl); infoCoverUrl = null; }
+
+  let meta;
+  try {
+    meta = await parseMp3Metadata(t.blob);
+  } catch (err) {
+    infoBodyEl.innerHTML = `<div class="info-empty">Failed to read file: ${escapeHtml(err.message || String(err))}</div>`;
+    return;
+  }
+
+  const sections = [];
+
+  // File
+  sections.push(`<div class="info-section"><h4>File</h4>${renderInfoRows([
+    ['Filename', t.blob.name || t.name],
+    ['Size', fmtBytes(meta.fileSize)],
+    ['MIME', t.blob.type || 'audio/mpeg'],
+    ['Duration', meta.duration ? fmtTime(meta.duration) : null],
+  ])}</div>`);
+
+  // MPEG audio
+  if (meta.frame) {
+    sections.push(`<div class="info-section"><h4>MPEG Audio</h4>${renderInfoRows([
+      ['Version', meta.frame.version],
+      ['Layer', meta.frame.layer],
+      ['Bitrate', meta.xing && meta.xing.vbr ? `~${Math.round(meta.frame.bitrate/1000)} kbps (VBR)` : `${meta.frame.bitrate/1000} kbps (CBR)`],
+      ['Sample rate', `${meta.frame.sampleRate} Hz`],
+      ['Channels', meta.frame.channelMode],
+      ['Encoder', meta.xing && meta.xing.encoder],
+      ['Frames', meta.xing && meta.xing.frames],
+    ])}</div>`);
+  } else {
+    sections.push(`<div class="info-section"><h4>MPEG Audio</h4><div class="info-empty">No MPEG frame found.</div></div>`);
+  }
+
+  // ID3v2
+  if (meta.id3v2) {
+    const f = meta.id3v2.frames;
+    const v2pairs = [
+      ['Version', `ID3v${meta.id3v2.version}`],
+      ['Title', f.TIT2 || f.TT2],
+      ['Artist', f.TPE1 || f.TP1],
+      ['Album', f.TALB || f.TAL],
+      ['Album Artist', f.TPE2 || f.TP2],
+      ['Year', f.TYER || f.TDRC || f.TYE],
+      ['Track', f.TRCK || f.TRK],
+      ['Genre', f.TCON || f.TCO],
+      ['Composer', f.TCOM || f.TCM],
+      ['BPM', f.TBPM || f.TBP],
+      ['Publisher', f.TPUB || f.TPB],
+      ['Comment', f.COMM],
+    ];
+    let html = `<div class="info-section"><h4>ID3v2 Tag</h4>`;
+    if (meta.id3v2.picture) {
+      try {
+        const blob = new Blob([meta.id3v2.picture.data], { type: meta.id3v2.picture.mime });
+        infoCoverUrl = URL.createObjectURL(blob);
+        html += `<img class="info-cover" src="${infoCoverUrl}" alt="Cover art" />`;
+      } catch {}
+    }
+    html += renderInfoRows(v2pairs) + `</div>`;
+    sections.push(html);
+  } else {
+    sections.push(`<div class="info-section"><h4>ID3v2 Tag</h4><div class="info-empty">Not present.</div></div>`);
+  }
+
+  // ID3v1
+  if (meta.id3v1) {
+    sections.push(`<div class="info-section"><h4>ID3v1 Tag</h4>${renderInfoRows([
+      ['Title', meta.id3v1.title],
+      ['Artist', meta.id3v1.artist],
+      ['Album', meta.id3v1.album],
+      ['Year', meta.id3v1.year],
+      ['Track', meta.id3v1.track],
+      ['Genre', meta.id3v1.genre],
+      ['Comment', meta.id3v1.comment],
+    ])}</div>`);
+  } else {
+    sections.push(`<div class="info-section"><h4>ID3v1 Tag</h4><div class="info-empty">Not present.</div></div>`);
+  }
+
+  infoBodyEl.innerHTML = sections.join('');
 }
 
 function lowerBound(arr, value) {
