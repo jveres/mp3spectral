@@ -1,13 +1,13 @@
 # MP3 Visualizer
 
 A single-file, near-zero-build, fully-local browser app: drop MP3 files onto
-the page, get a playlist plus six audio-reactive WebGL effects driven by the
+the page, get a playlist plus seven audio-reactive WebGL effects driven by the
 Web Audio API. Optionally point it at a folder of images and the **Photos**
 effect runs them as a beat-aware slideshow. Audio decode and image rendering
 all happen client-side; nothing is uploaded.
 
-Just open `index.html`. The page loads [Howler.js](https://howlerjs.com/) from
-a CDN for audio playback; no build step otherwise.
+Just open `index.html`. The page loads [Howler.js](https://howlerjs.com/) and
+[Three.js](https://threejs.org/) from a CDN; no build step otherwise.
 
 ```sh
 open index.html              # macOS
@@ -59,11 +59,15 @@ effect index is persisted in `localStorage`.
 | Synthwave     | Retro grid + sun + green/yellow/red VU bars; palette cycles  |
 | Kali          | Kali-set IFS fractal with orbit-trap glow                    |
 | Plasma Globe  | Ray-marched volumetric plasma globe (after nimitz)           |
+| Trails Stream | Three.js scene: light streams down a tunnel under a Milky Way background |
 | Photos        | Slideshow of user-loaded images with animated transitions    |
 
 All shader effects react to bass / mids / highs and a beat detector (transient
 detection on the bass band with a velocity-based pulse clock that surges on
-each kick).
+each kick). A comb-filter tempo tracker runs over a rolling spectral-flux
+buffer to lock onto the dominant beat period and predict beats between hits;
+the Trails Stream effect also reacts to a sustained-melody envelope so violin
+and other transient-poor content keeps the streams flowing.
 
 ### Photos effect
 
@@ -104,11 +108,14 @@ touch). Any movement or keypress brings them back.
 
 ## Implementation notes
 
-Everything (apart from the Howler.js CDN load) is in `index.html` — vanilla JS
-modules, no build, no other deps.
+Everything (apart from the Howler.js and Three.js CDN loads) is in
+`index.html` — vanilla JS modules, no build, no other deps.
 
 - A 2D fragment shader pipeline driven by an FFT spectrum texture (256 bins,
-  uploaded each frame from a Web Audio `AnalyserNode`).
+  uploaded each frame from a Web Audio `AnalyserNode`). The Trails Stream
+  effect is the one exception: it's a Three.js scene with its own
+  EffectComposer pipeline (bloom + selective bottom blur) loaded lazily on
+  first activation.
 - The analyser is spliced between `Howler.masterGain` and the `AudioContext`
   destination once, so the visualizer reads frequency data from whatever
   Howler is playing without each track needing its own wiring.
@@ -128,9 +135,12 @@ modules, no build, no other deps.
 ## Credits
 
 - [Howler.js](https://howlerjs.com/) — MIT.
+- [Three.js](https://threejs.org/) — MIT.
 - [Star Nest](https://www.shadertoy.com/view/XlfGRj) by Pablo Román Andrioli
   ("Kali") — MIT.
 - [Plasma Globe](https://www.shadertoy.com/view/XsjXRm) by nimitz — CC BY-NC-SA.
+- The Trails Stream's Milky Way background adapts a community Shadertoy
+  (metaDiamond stars + domain-warped fbm nebula).
 
 ## License
 
