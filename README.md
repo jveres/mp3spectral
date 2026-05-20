@@ -1,4 +1,4 @@
-# mp3spectral
+# WebGL MP3 Visualizer
 
 A single-file, near-zero-build, fully-local browser app: drop MP3 files onto
 the page, get a playlist plus seven audio-reactive WebGL effects driven by the
@@ -6,30 +6,26 @@ Web Audio API. Optionally point it at a folder of images and the **Photos**
 effect runs them as a beat-aware slideshow. Audio decode and image rendering
 all happen client-side; nothing is uploaded.
 
-Live at **[mp3spectral.com](https://mp3spectral.com)**.
-
 Just open `index.html`. The page loads [Howler.js](https://howlerjs.com/) and
 [Three.js](https://threejs.org/) from a CDN; no build step otherwise.
 
-```sh
-open index.html              # macOS
-xdg-open index.html          # Linux
-start index.html             # Windows
-```
+The app branding (page title, header label, favicon) lives inline near the
+top of `index.html` — change it there to make it your own.
 
 ## Deployment
 
-The app is a single static `index.html` with no build step, hosted on
-Cloudflare Pages. `wrangler.toml` configures the Pages project:
+The app is a single static `index.html` with no build step, so any static
+host works (GitHub Pages, Netlify, Vercel, an S3 bucket, …). A `wrangler.toml`
+is included for [Cloudflare Pages](https://pages.cloudflare.com/):
 
 ```sh
-npx wrangler login                                    # one-time auth
-npx wrangler pages deploy . --project-name=mp3spectral # first deploy
-npx wrangler pages deploy                              # subsequent deploys
+npx wrangler login                                   # one-time auth
+npx wrangler pages deploy . --project-name=<project> # first deploy
+npx wrangler pages deploy                            # subsequent deploys
 ```
 
-The custom domain `mp3spectral.com` is attached in the Cloudflare dashboard
-(Workers & Pages → mp3spectral → Custom domains).
+Attach a custom domain in the Cloudflare dashboard (Workers & Pages → your
+project → Custom domains).
 
 ## Audio
 
