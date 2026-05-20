@@ -68,6 +68,13 @@
     -webkit-background-clip: text; background-clip: text; color: transparent;
     font-size: 14px;
   }
+  .brand-row { display: flex; align-items: center; gap: 6px; }
+  .brand-info {
+    appearance: none; border: 0; background: none; cursor: pointer;
+    color: var(--muted); font-size: 13px; line-height: 1;
+    padding: 2px 4px; border-radius: 6px;
+  }
+  .brand-info:hover { color: #fff; background: rgba(255,255,255,0.08); }
   .hint { color: var(--muted); font-size: 12px; }
   .path-hud {
     flex: 1;
@@ -124,6 +131,14 @@
   .track.active {
     background: linear-gradient(90deg, rgba(125,249,255,0.18), rgba(255,92,200,0.12));
   }
+  .track.dragging { opacity: 0.4; }
+  .track.drag-over { box-shadow: inset 0 2px 0 0 var(--accent); }
+  .track .grip {
+    color: var(--muted); cursor: grab; font-size: 12px;
+    line-height: 1; user-select: none; opacity: 0; transition: opacity 120ms;
+  }
+  .track:hover .grip { opacity: 0.7; }
+  .track .grip:active { cursor: grabbing; }
   .track .idx { color: var(--muted); font-variant-numeric: tabular-nums; width: 22px; }
   .track .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .track .dur { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
@@ -308,7 +323,7 @@
     background: linear-gradient(90deg, var(--accent), var(--accent2));
     -webkit-background-clip: text; background-clip: text; color: transparent;
   }
-  .welcome p { margin: 0 0 18px; color: var(--muted); font-size: 14px; line-height: 1.5; }
+  .welcome p { margin: 0 0 16px; color: var(--muted); font-size: 14px; line-height: 1.5; }
   .file-btn {
     appearance: none; border: 0; cursor: pointer;
     padding: 10px 18px; border-radius: 999px;
@@ -316,6 +331,25 @@
     color: #08101a; font-weight: 600; font-size: 13px;
     letter-spacing: 0.3px;
   }
+  .welcome-foot {
+    margin-top: 16px;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+  }
+  .welcome-skip {
+    appearance: none; border: 0; background: none; cursor: pointer;
+    color: var(--muted); font-size: 12px; text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .welcome-skip:hover { color: var(--text); }
+  .welcome-dismiss {
+    display: flex; align-items: center; gap: 6px;
+    color: var(--muted); font-size: 12px; cursor: pointer;
+    user-select: none;
+  }
+  .welcome-dismiss input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+  /* When opened deliberately from the header info button, the opt-out
+     checkbox is irrelevant — hide it. */
+  .welcome.manual .welcome-dismiss { display: none; }
 
   ::-webkit-scrollbar { width: 8px; }
   ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 99px; }
@@ -336,14 +370,28 @@
   <div class="welcome" id="welcome">
     <div class="welcome-card">
       <h1>WebGL MP3 Visualizer</h1>
-      <p>Drop MP3 files anywhere on the page to build a playlist, or pick files manually. Audio plays locally — nothing is uploaded.</p>
+      <p>Drop MP3 files anywhere on the page to build a playlist, or pick them
+      manually. Each track drives a real-time, beat-reactive WebGL visualizer —
+      cycle effects with the header button or the <strong>E</strong> key. Point
+      it at an image folder for the beat-aware Photos slideshow. Everything runs
+      locally in your browser; nothing is uploaded.</p>
       <button class="file-btn" id="pickBtn">Choose MP3 files</button>
+      <div class="welcome-foot">
+        <label class="welcome-dismiss">
+          <input type="checkbox" id="welcomeDismiss" />
+          Don't show this again
+        </label>
+        <button class="welcome-skip" id="welcomeSkip">Skip for now</button>
+      </div>
     </div>
   </div>
 
   <div class="ui">
     <header>
-      <div class="brand">▮▮ Spectral</div>
+      <div class="brand-row">
+        <div class="brand">▮▮ Spectral</div>
+        <button class="brand-info" id="brandInfo" title="About / help">ⓘ</button>
+      </div>
       <div class="path-hud" id="imgPath"></div>
       <div style="display:flex; align-items:center; gap:12px;">
         <div class="hint" id="hint" style="cursor:pointer; user-select:none;" title="Click to choose MP3 files">Drop .mp3 files anywhere</div>
@@ -426,6 +474,10 @@
 
 <script type="module">
 'use strict';
+
+// Debug logging — enabled only when the page is loaded with ?debug=1.
+const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
+function dlog(...args) { if (DEBUG) console.log(...args); }
 
 // ---------- WebGL Visualizer ----------
 const canvas = document.getElementById('gl');
@@ -1940,7 +1992,7 @@ const Player = (() => {
   function onCtxStateChange() {
     if (!Howler || !Howler.ctx) return;
     const s = Howler.ctx.state;
-    console.log('[audio] ctx statechange ->', s);
+    dlog('[audio] ctx statechange ->', s);
     if (s === 'interrupted' || s === 'suspended' || s === 'closed') {
       needsRebuild = true;
     }
@@ -1958,7 +2010,7 @@ const Player = (() => {
   // replacement ctx + masterGain manually and assign them onto Howler — any
   // subsequent `new Howl({html5:false})` will pick them up.
   function rebuildContext() {
-    console.log('[audio] rebuildContext: starting');
+    dlog('[audio] rebuildContext: starting');
     unloadCurrent();
     if (typeof Howler === 'undefined') return;
     try { Howler.unload(); } catch {}
@@ -1989,7 +2041,7 @@ const Player = (() => {
     try { ctx.addEventListener('statechange', onCtxStateChange); } catch {}
     ctx._mvStateBound = true;
     needsRebuild = false;
-    console.log('[audio] rebuildContext: done, ctx.state =', ctx.state);
+    dlog('[audio] rebuildContext: done, ctx.state =', ctx.state);
   }
 
   function unloadCurrent() {
@@ -2112,6 +2164,36 @@ const fileInput = document.getElementById('fileInput');
 const dropOverlay = document.getElementById('drop');
 const welcome = document.getElementById('welcome');
 const pickBtn = document.getElementById('pickBtn');
+
+// Welcome dialog: a returning user can opt out via the "Don't show this
+// again" checkbox, persisted in localStorage. Hide it immediately on load
+// if they previously opted out, OR if a saved playlist exists — the playlist
+// restores asynchronously from IndexedDB, and showing the dialog until that
+// resolves causes a visible flash. `mv.hasPlaylist` lets us decide synchronously.
+const welcomeDismissEl = document.getElementById('welcomeDismiss');
+if (localStorage.getItem('mv.hideWelcome') === '1') {
+  welcomeDismissEl.checked = true;
+  welcome.classList.add('hidden');
+}
+if (localStorage.getItem('mv.hasPlaylist') === '1') {
+  welcome.classList.add('hidden');
+}
+welcomeDismissEl.addEventListener('change', () => {
+  if (welcomeDismissEl.checked) localStorage.setItem('mv.hideWelcome', '1');
+  else localStorage.removeItem('mv.hideWelcome');
+});
+const welcomeSkipEl = document.getElementById('welcomeSkip');
+welcomeSkipEl.addEventListener('click', () => {
+  welcome.classList.add('hidden');
+});
+// Re-open the welcome dialog any time from the header info button. Opened
+// this way it's an "about" panel — hide the opt-out checkbox and label the
+// dismiss button "Close" instead of "Skip for now".
+document.getElementById('brandInfo').addEventListener('click', () => {
+  welcome.classList.add('manual');
+  welcomeSkipEl.textContent = 'Close';
+  welcome.classList.remove('hidden');
+});
 const playBtn = document.getElementById('play');
 const playIcon = document.getElementById('playIcon');
 const prevBtn = document.getElementById('prev');
@@ -2157,6 +2239,20 @@ const idb = (() => {
   return {
     add: (rec)  => tx('readwrite', s => new Promise((r, j) => { const q = s.add(rec); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
     put: (rec)  => tx('readwrite', s => { s.put(rec); }),
+    // Update only the given fields of a record, preserving the stored blob.
+    // Critical on Safari: writing an in-memory IDB-backed Blob back to the
+    // store can corrupt it (WebKitBlobResource error 1). Reading the record
+    // inside the transaction keeps the original, valid stored blob.
+    patch: (id, changes) => tx('readwrite', s => new Promise((r, j) => {
+      const q = s.get(id);
+      q.onsuccess = () => { const rec = q.result; if (rec) { Object.assign(rec, changes); s.put(rec); } r(); };
+      q.onerror = () => j(q.error);
+    })),
+    patchAll: (entries) => tx('readwrite', s => Promise.all(entries.map(e => new Promise((r, j) => {
+      const q = s.get(e.id);
+      q.onsuccess = () => { const rec = q.result; if (rec) { Object.assign(rec, e.changes); s.put(rec); } r(); };
+      q.onerror = () => j(q.error);
+    })))),
     del: (id)   => tx('readwrite', s => { s.delete(id); }),
     get: (id)   => tx('readonly',  s => new Promise((r, j) => { const q = s.get(id); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
     all: ()     => tx('readonly',  s => new Promise((r, j) => { const q = s.getAll(); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
@@ -2179,13 +2275,37 @@ function fmtTime(s) {
   return `${m}:${ss}`;
 }
 
+let dragIndex = -1; // index of the playlist row currently being dragged
+
+// Move a track within the playlist, keeping `current` pointed at the same
+// track, then persist the new order so it survives reloads.
+function reorderTracks(from, to) {
+  if (from < 0 || to < 0 || from === to) return;
+  if (from >= tracks.length || to >= tracks.length) return;
+  const currentTrack = current >= 0 ? tracks[current] : null;
+  const [moved] = tracks.splice(from, 1);
+  tracks.splice(to, 0, moved);
+  if (currentTrack) current = tracks.indexOf(currentTrack);
+  renderPlaylist();
+  persistOrder();
+}
+
 function renderPlaylist() {
   playlistEl.innerHTML = '';
   emptyEl.style.display = tracks.length ? 'none' : 'block';
+  // Synchronous hint for the next page load so the welcome dialog doesn't
+  // flash before the IndexedDB playlist restore resolves.
+  if (tracks.length) localStorage.setItem('mv.hasPlaylist', '1');
+  else localStorage.removeItem('mv.hasPlaylist');
   tracks.forEach((t, i) => {
     const row = document.createElement('div');
     row.className = 'track' + (i === current ? ' active' : '');
+    // The row is only made draggable while the pointer is held on the grip
+    // handle — otherwise a click-to-play with slight movement would be
+    // hijacked by the browser into a drag and the track would never play.
+    row.draggable = false;
     row.innerHTML = `
+      <span class="grip" title="Drag to reorder">⠿</span>
       <span class="idx">${i + 1}</span>
       <button class="like ${t.liked ? 'on' : ''}" title="${t.liked ? 'Unlike' : 'Like'}">${t.liked ? '♥' : '♡'}</button>
       <span class="name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span>
@@ -2196,6 +2316,43 @@ function renderPlaylist() {
     row.addEventListener('click', (e) => {
       if (e.target.closest('button')) return;
       playIndex(i);
+    });
+    // Arm dragging only while the grip handle is held.
+    const grip = row.querySelector('.grip');
+    grip.addEventListener('mousedown', () => {
+      row.draggable = true;
+      const disarm = () => { row.draggable = false; window.removeEventListener('mouseup', disarm); };
+      window.addEventListener('mouseup', disarm);
+    });
+    row.addEventListener('dragstart', (e) => {
+      if (!row.draggable) { e.preventDefault(); return; }
+      dragIndex = i;
+      row.classList.add('dragging');
+      suspendIdle(true);  // keep the HUD up for the whole drag
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', String(i)); } catch {}
+      }
+    });
+    row.addEventListener('dragend', () => {
+      row.draggable = false;
+      row.classList.remove('dragging');
+      playlistEl.querySelectorAll('.track.drag-over').forEach(el => el.classList.remove('drag-over'));
+      dragIndex = -1;
+      suspendIdle(false);
+    });
+    row.addEventListener('dragover', (e) => {
+      if (dragIndex < 0 || dragIndex === i) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      row.classList.add('drag-over');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();   // don't let the window file-drop handler also fire
+      row.classList.remove('drag-over');
+      reorderTracks(dragIndex, i);
     });
     row.querySelector('button.like').addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2215,6 +2372,17 @@ function renderPlaylist() {
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Persist the current playlist order: write each persisted track's `ord` to
+// match its array index. Call after any reorder (sort, drag, remove). Uses
+// idb.patchAll so only `ord` changes — the stored blob is never rewritten.
+function persistOrder() {
+  const entries = [];
+  tracks.forEach((t, i) => {
+    if (t.id != null) entries.push({ id: t.id, changes: { ord: i } });
+  });
+  if (entries.length) idb.patchAll(entries).catch(err => console.warn('order persist failed', err));
 }
 
 // ---- MP3 metadata parser (ID3v2, ID3v1, MPEG frame header, Xing/Info/LAME) ----
@@ -2758,8 +2926,9 @@ function addFiles(files) {
     const t = { id: null, name: f.name.replace(/\.mp3$/i, ''), url, dur: 0, blob: f, liked: false };
     tracks.push(t);
     added.push(t);
-    // persist to IDB; assign id when known
-    idb.add({ name: t.name, dur: 0, blob: f, liked: false }).then(id => {
+    const ord = tracks.length - 1;
+    // persist to IDB; assign id when known. `ord` records append position.
+    idb.add({ name: t.name, dur: 0, blob: f, liked: false, ord }).then(id => {
       t.id = id;
     }).catch(err => console.warn('persist failed', err));
   }
@@ -2774,7 +2943,7 @@ function toggleLike(i) {
   const t = tracks[i];
   t.liked = !t.liked;
   if (t.id != null) {
-    idb.put({ id: t.id, name: t.name, dur: t.dur, blob: t.blob, liked: t.liked }).catch(() => {});
+    idb.patch(t.id, { liked: t.liked }).catch(() => {});
   }
   renderPlaylist();
 }
@@ -2786,6 +2955,7 @@ function sortPlaylistByName() {
   tracks.sort((a, b) => coll.compare(a.name, b.name));
   if (currentTrack) current = tracks.indexOf(currentTrack);
   renderPlaylist();
+  persistOrder();
 }
 
 function removeTrack(i) {
@@ -2807,6 +2977,7 @@ function removeTrack(i) {
     current--;
   }
   renderPlaylist();
+  persistOrder();
 }
 
 async function playIndex(i) {
@@ -2859,7 +3030,7 @@ async function playIndex(i) {
   if (dur != null && dur > 0 && (!t.dur || Math.abs(t.dur - dur) > 0.5)) {
     t.dur = dur;
     if (t.id != null) {
-      idb.put({ id: t.id, name: t.name, dur: t.dur, blob: t.blob, liked: t.liked }).catch(() => {});
+      idb.patch(t.id, { dur: t.dur }).catch(() => {});
     }
     renderPlaylist();
   }
@@ -2869,7 +3040,7 @@ async function playIndex(i) {
 }
 
 function togglePlay() {
-  console.log('[audio] togglePlay: current=', current, 'state=', Player.state, 'needsRebuild=', Player.needsRebuild, 'paused=', Player.paused, 'hasBuffer=', Player.hasBuffer);
+  dlog('[audio] togglePlay: current=', current, 'state=', Player.state, 'needsRebuild=', Player.needsRebuild, 'paused=', Player.paused, 'hasBuffer=', Player.hasBuffer);
   if (current === -1) {
     if (tracks.length) playIndex(0);
     return;
@@ -2915,8 +3086,20 @@ Player.setVolume(parseInt(volEl.value, 10) / 100);
 
 // Restore persisted playlist from IndexedDB on startup
 idb.all().then(records => {
-  if (!records || !records.length) return;
-  records.sort((a, b) => a.id - b.id);
+  if (!records || !records.length) {
+    // No saved playlist after all — clear the stale hint and, unless the user
+    // opted out, reveal the welcome dialog that was pre-hidden to avoid a flash.
+    localStorage.removeItem('mv.hasPlaylist');
+    if (localStorage.getItem('mv.hideWelcome') !== '1') welcome.classList.remove('hidden');
+    return;
+  }
+  // Restore the saved playlist order. `ord` is the custom order; fall back to
+  // insertion order (id) for records saved before ordering was added.
+  records.sort((a, b) => {
+    const ao = a.ord != null ? a.ord : a.id;
+    const bo = b.ord != null ? b.ord : b.id;
+    return ao - bo;
+  });
   for (const rec of records) {
     const url = URL.createObjectURL(rec.blob);
     tracks.push({ id: rec.id, name: rec.name, url, dur: rec.dur || 0, blob: rec.blob, liked: !!rec.liked });
@@ -2999,15 +3182,22 @@ function pickNext(dir) {
 
 // Mouse idle: hide UI after inactivity
 let idleTimer = null;
+let idleSuspended = false;  // held during playlist drag-reorder
 function poke() {
   document.body.classList.remove('idle');
   if (idleTimer) clearTimeout(idleTimer);
+  if (idleSuspended) return;  // don't re-arm the fade-out while reordering
   idleTimer = setTimeout(() => document.body.classList.add('idle'), 2500);
 }
 ['mousemove', 'mousedown', 'keydown', 'touchstart', 'wheel'].forEach(ev =>
   window.addEventListener(ev, poke, { passive: true })
 );
 poke();
+// Keep the HUD visible for the whole drag, even if the pointer stops moving.
+function suspendIdle(on) {
+  idleSuspended = on;
+  poke();  // clears the timer when suspending; re-arms it when released
+}
 
 // Effect switcher
 document.getElementById('fx').addEventListener('click', () => useEffect(curEffect + 1));
@@ -3092,7 +3282,7 @@ document.addEventListener('webkitfullscreenchange', syncFsIcon);
 // playIndex(current) routes through Player.loadBlob which performs the
 // rebuild before instantiating the new Howl.
 function onTabVisible() {
-  console.log('[audio] tab visible: ctx.state =', Player.state, 'needsRebuild =', Player.needsRebuild, 'paused =', Player.paused);
+  dlog('[audio] tab visible: ctx.state =', Player.state, 'needsRebuild =', Player.needsRebuild, 'paused =', Player.paused);
   // Soft path: try to nudge the existing graph back to life (cheap; works
   // when the browser kept the ctx and hardware binding alive).
   try { Player.recover(); } catch {}

@@ -52,6 +52,15 @@ app doesn't need to maintain those workarounds itself.
   Blob — no extra dependencies.
 - **✕** — remove from playlist.
 - Click anywhere on the row to play.
+- **⠿ grip** — drag the handle to reorder tracks.
+
+### Playlist order
+
+- **Sort A–Z** button in the playlist header sorts by name (case-insensitive,
+  natural numeric ordering).
+- Drag the **⠿** grip on any row to reorder manually.
+- The order — whether changed by sort, drag, add, or remove — is persisted to
+  IndexedDB (`ord` field per track) and restored on reload.
 
 ## Effects
 
@@ -95,20 +104,34 @@ and other transient-poor content keeps the streams flowing.
 - Header HUD shows the current image's relative path while Photos is active;
   the previously-loaded directory name is shown on the button label.
 
+## Welcome dialog
+
+On first visit a welcome dialog gives a brief overview. **Don't show this
+again** stores an opt-out in `localStorage`; **Skip for now** dismisses it for
+the session only. The **ⓘ** button next to the "Spectral" brand reopens it any
+time as an about panel (the opt-out checkbox is hidden in that mode). To avoid
+a flash before the IndexedDB playlist restore resolves, the dialog is
+suppressed synchronously when a saved playlist exists.
+
 ## Idle UI
 
 The cursor and UI panels fade out after ~2.5s of no input (mouse, keys, wheel,
-touch). Any movement or keypress brings them back.
+touch). Any movement or keypress brings them back. The fade-out is suspended
+while dragging a playlist row so the HUD stays visible mid-reorder.
 
 ## Persistence
 
-- **Playlist** — Audio Blobs, names, durations, and likes live in IndexedDB
-  (`mvDB.tracks`). Survives reloads.
+- **Playlist** — Audio Blobs, names, durations, likes, and order (`ord`) live
+  in IndexedDB (`mvDB.tracks`). Survives reloads. Metadata updates (like,
+  duration, order) are written with a read-modify-write `patch` that preserves
+  the stored blob, since rewriting an IDB-backed `Blob` corrupts it on Safari.
 - **Photos** — image Blobs and relative paths live in IndexedDB
   (`mvDB.images`). Survives reloads. Last-picked directory name is in
   `localStorage` (`mv.imgDir`).
 - **Toggles, effect selection, volume** — `localStorage` keys (`mv.shuf`,
   `mv.loop`, `mv.autofx`, `mv.fx`).
+- **Welcome dialog opt-out, playlist hint** — `localStorage` keys
+  (`mv.hideWelcome`, `mv.hasPlaylist`).
 - DB schema is at version 2; the upgrade path adds the `images` store
   alongside the existing `tracks` store.
 
@@ -137,6 +160,8 @@ Everything (apart from the Howler.js and Three.js CDN loads) is in
 - Track Blobs are re-fetched from IndexedDB at play time before each Howl is
   created, because Safari/WebKit invalidates IDB-backed `Blob` references
   across page loads.
+- Loading the page with `?debug=1` enables verbose `[audio]` console logging
+  (AudioContext state changes, recovery, rebuilds); it is silent otherwise.
 
 ## Credits
 
