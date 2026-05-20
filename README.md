@@ -1,10 +1,12 @@
-# MP3 Visualizer
+# mp3spectral
 
 A single-file, near-zero-build, fully-local browser app: drop MP3 files onto
 the page, get a playlist plus seven audio-reactive WebGL effects driven by the
 Web Audio API. Optionally point it at a folder of images and the **Photos**
 effect runs them as a beat-aware slideshow. Audio decode and image rendering
 all happen client-side; nothing is uploaded.
+
+Live at **[mp3spectral.com](https://mp3spectral.com)**.
 
 Just open `index.html`. The page loads [Howler.js](https://howlerjs.com/) and
 [Three.js](https://threejs.org/) from a CDN; no build step otherwise.
@@ -14,6 +16,20 @@ open index.html              # macOS
 xdg-open index.html          # Linux
 start index.html             # Windows
 ```
+
+## Deployment
+
+The app is a single static `index.html` with no build step, hosted on
+Cloudflare Pages. `wrangler.toml` configures the Pages project:
+
+```sh
+npx wrangler login                                    # one-time auth
+npx wrangler pages deploy . --project-name=mp3spectral # first deploy
+npx wrangler pages deploy                              # subsequent deploys
+```
+
+The custom domain `mp3spectral.com` is attached in the Cloudflare dashboard
+(Workers & Pages → mp3spectral → Custom domains).
 
 ## Audio
 
@@ -43,7 +59,7 @@ app doesn't need to maintain those workarounds itself.
 
 ### Per-track
 
-- **♡ / ♥** — like a track (persisted with the track).
+- **♡ / ♥** — like a track (persisted).
 - **ⓘ** — open an info modal with the file's stored MP3 metadata: MPEG
   frame header (version, layer, bitrate, sample rate, channels, encoder
   string, frame count, CBR vs. VBR), ID3v2 frames (title / artist / album /
@@ -58,9 +74,10 @@ app doesn't need to maintain those workarounds itself.
 
 - **Sort A–Z** button in the playlist header sorts by name (case-insensitive,
   natural numeric ordering).
-- Drag the **⠿** grip on any row to reorder manually.
+- Drag the **⠿** grip on any row to reorder manually (rows are only draggable
+  while the grip is held, so a click-to-play is never hijacked into a drag).
 - The order — whether changed by sort, drag, add, or remove — is persisted to
-  IndexedDB (`ord` field per track) and restored on reload.
+  `localStorage` and restored on reload.
 
 ## Effects
 
@@ -108,7 +125,7 @@ and other transient-poor content keeps the streams flowing.
 
 On first visit a welcome dialog gives a brief overview. **Don't show this
 again** stores an opt-out in `localStorage`; **Skip for now** dismisses it for
-the session only. The **ⓘ** button next to the "Spectral" brand reopens it any
+the session only. The **ⓘ** button next to the brand reopens it any
 time as an about panel (the opt-out checkbox is hidden in that mode). To avoid
 a flash before the IndexedDB playlist restore resolves, the dialog is
 suppressed synchronously when a saved playlist exists.
@@ -121,10 +138,14 @@ while dragging a playlist row so the HUD stays visible mid-reorder.
 
 ## Persistence
 
-- **Playlist** — Audio Blobs, names, durations, likes, and order (`ord`) live
-  in IndexedDB (`mvDB.tracks`). Survives reloads. Metadata updates (like,
-  duration, order) are written with a read-modify-write `patch` that preserves
-  the stored blob, since rewriting an IDB-backed `Blob` corrupts it on Safari.
+- **Playlist audio** — the `mvDB.tracks` IndexedDB store holds write-once
+  `{name, blob}` records: a track record is only ever added, never re-written.
+  Re-writing a record that carries an IDB-backed `Blob` corrupts the blob on
+  Safari (`WebKitBlobResource error 1`), which breaks playback.
+- **Playlist metadata** — order, per-track liked state, and durations live in
+  `localStorage` (`mv.trackMeta`: `{ order: [ids…], meta: { id: {liked, dur} } }`).
+  Keeping mutable metadata out of the blob records is what makes reorders and
+  likes safe. On restore the write-once blob records are merged with this.
 - **Photos** — image Blobs and relative paths live in IndexedDB
   (`mvDB.images`). Survives reloads. Last-picked directory name is in
   `localStorage` (`mv.imgDir`).

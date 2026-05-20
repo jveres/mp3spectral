@@ -62,6 +62,18 @@
     display: flex; align-items: center; justify-content: space-between;
     gap: 12px;
   }
+  .brand-row { flex-shrink: 0; }
+  /* The control cluster scrolls horizontally when it can't fit (narrow
+     phones) so every button stays reachable instead of being clipped. */
+  .header-controls {
+    display: flex; align-items: center; gap: 12px;
+    min-width: 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .header-controls::-webkit-scrollbar { display: none; }
+  .header-controls > * { flex-shrink: 0; }
   .brand {
     font-weight: 600; letter-spacing: 0.4px;
     background: linear-gradient(90deg, var(--accent), var(--accent2));
@@ -393,7 +405,7 @@
         <button class="brand-info" id="brandInfo" title="About / help">ⓘ</button>
       </div>
       <div class="path-hud" id="imgPath"></div>
-      <div style="display:flex; align-items:center; gap:12px;">
+      <div class="header-controls">
         <div class="hint" id="hint" style="cursor:pointer; user-select:none;" title="Click to choose MP3 files">Drop .mp3 files anywhere</div>
         <button class="btn toggle" id="shuffle" title="Shuffle / random play" style="width:auto; padding:0 12px; border-radius:18px; font-size:12px;">Shuffle</button>
         <button class="btn toggle" id="loop" title="Loop playlist" style="width:auto; padding:0 12px; border-radius:18px; font-size:12px;">Loop</button>
