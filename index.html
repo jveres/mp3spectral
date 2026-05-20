@@ -387,7 +387,15 @@
     .ui { padding: 12px; gap: 8px; }
     .bottom-bar { grid-template-columns: 1fr; }
     .playlist { width: 100%; max-height: 34vh; }
-    .player { min-width: 0 !important; }
+    /* Drop the now-playing label + volume slider (redundant on a phone:
+       the playlist shows the track, hardware buttons set volume) so the
+       player fits the screen instead of overflowing off the right edge. */
+    .player {
+      min-width: 0 !important;
+      grid-template-columns: auto 1fr;
+      gap: 10px; padding: 10px 12px;
+    }
+    .player .right { display: none; }
   }
 </style>
 <script type="importmap">
