@@ -9,6 +9,17 @@
      self-contained (no separate asset file / extra request). -->
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%237df9ff'/><stop offset='1' stop-color='%23ff5cc8'/></linearGradient></defs><rect width='32' height='32' rx='7' fill='%230a0e1a'/><g fill='url(%23g)'><rect x='2.8' y='16' width='3.6' height='11' rx='1.8'/><rect x='8.5' y='8' width='3.6' height='19' rx='1.8'/><rect x='14.2' y='2' width='3.6' height='25' rx='1.8'/><rect x='19.9' y='12' width='3.6' height='15' rx='1.8'/><rect x='25.6' y='18' width='3.6' height='9' rx='1.8'/></g></svg>" />
 <meta name="theme-color" content="#05060a" />
+<script>
+  // Decide synchronously, before first paint, whether the welcome dialog
+  // should be hidden — the deferred module script runs too late and the
+  // dialog would flash. The module clears this class once it takes over.
+  try {
+    if (localStorage.getItem('mv.hideWelcome') === '1' ||
+        localStorage.getItem('mv.hasPlaylist') === '1') {
+      document.documentElement.classList.add('welcome-suppressed');
+    }
+  } catch (e) {}
+</script>
 <style>
   :root {
     --bg: #05060a;
@@ -339,6 +350,9 @@
     text-align: center;
   }
   .welcome.hidden { display: none; }
+  /* Pre-paint suppression set by the synchronous head script (avoids a
+     flash). The module script removes this class once it manages state. */
+  html.welcome-suppressed .welcome { display: none; }
   .welcome-card {
     pointer-events: auto;
     padding: 30px 36px;
@@ -2236,6 +2250,9 @@ if (localStorage.getItem('mv.hideWelcome') === '1') {
 if (localStorage.getItem('mv.hasPlaylist') === '1') {
   welcome.classList.add('hidden');
 }
+// The head script's pre-paint suppression has done its job — hand control
+// to the .hidden class so reopen / restore-empty paths can show the dialog.
+document.documentElement.classList.remove('welcome-suppressed');
 welcomeDismissEl.addEventListener('change', () => {
   if (welcomeDismissEl.checked) localStorage.setItem('mv.hideWelcome', '1');
   else localStorage.removeItem('mv.hideWelcome');
