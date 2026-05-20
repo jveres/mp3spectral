@@ -3108,6 +3108,19 @@ idb.all().then(records => {
   renderPlaylist();
 }).catch(err => console.warn('playlist restore failed', err));
 
+// Preload the Trails Stream effect during idle time so switching to it is
+// instant. Otherwise the first switch pays for 7 dynamic CDN imports plus a
+// full Three.js scene build — a visible delay, and the synchronous build can
+// glitch audio. initTrails() is idempotent; a later useEffect() call no-ops.
+(() => {
+  const preload = () => { dlog('[trails] preloading'); initTrails(); };
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(preload, { timeout: 4000 });
+  } else {
+    setTimeout(preload, 2500);
+  }
+})();
+
 // ---------- File input + drag/drop ----------
 pickBtn.addEventListener('click', () => fileInput.click());
 document.getElementById('hint').addEventListener('click', () => fileInput.click());
