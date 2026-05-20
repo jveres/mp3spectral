@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>WebGL MP3 Visualizer</title>
+<title>mp3spectral</title>
 <style>
   :root {
     --bg: #05060a;
@@ -369,7 +369,7 @@
 
   <div class="welcome" id="welcome">
     <div class="welcome-card">
-      <h1>WebGL MP3 Visualizer</h1>
+      <h1>mp3spectral</h1>
       <p>Drop MP3 files anywhere on the page to build a playlist, or pick them
       manually. Each track drives a real-time, beat-reactive WebGL visualizer —
       cycle effects with the header button or the <strong>E</strong> key. Point
@@ -389,7 +389,7 @@
   <div class="ui">
     <header>
       <div class="brand-row">
-        <div class="brand">▮▮ Spectral</div>
+        <div class="brand">▮▮ mp3spectral</div>
         <button class="brand-info" id="brandInfo" title="About / help">ⓘ</button>
       </div>
       <div class="path-hud" id="imgPath"></div>
@@ -2237,22 +2237,12 @@ const idb = (() => {
   }));
   const tx = (mode, fn) => txOn('tracks', mode, fn);
   return {
+    // Track records are WRITE-ONCE: a record is only ever `add`ed, never
+    // `put` back. On Safari, re-writing a record that carries an IDB-backed
+    // Blob can corrupt the Blob (WebKitBlobResource error 1) and break
+    // playback. All mutable metadata (order, liked, duration) lives in
+    // localStorage instead — see persistMeta() / the restore block.
     add: (rec)  => tx('readwrite', s => new Promise((r, j) => { const q = s.add(rec); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
-    put: (rec)  => tx('readwrite', s => { s.put(rec); }),
-    // Update only the given fields of a record, preserving the stored blob.
-    // Critical on Safari: writing an in-memory IDB-backed Blob back to the
-    // store can corrupt it (WebKitBlobResource error 1). Reading the record
-    // inside the transaction keeps the original, valid stored blob.
-    patch: (id, changes) => tx('readwrite', s => new Promise((r, j) => {
-      const q = s.get(id);
-      q.onsuccess = () => { const rec = q.result; if (rec) { Object.assign(rec, changes); s.put(rec); } r(); };
-      q.onerror = () => j(q.error);
-    })),
-    patchAll: (entries) => tx('readwrite', s => Promise.all(entries.map(e => new Promise((r, j) => {
-      const q = s.get(e.id);
-      q.onsuccess = () => { const rec = q.result; if (rec) { Object.assign(rec, e.changes); s.put(rec); } r(); };
-      q.onerror = () => j(q.error);
-    })))),
     del: (id)   => tx('readwrite', s => { s.delete(id); }),
     get: (id)   => tx('readonly',  s => new Promise((r, j) => { const q = s.get(id); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
     all: ()     => tx('readonly',  s => new Promise((r, j) => { const q = s.getAll(); q.onsuccess = () => r(q.result); q.onerror = () => j(q.error); })),
@@ -2287,7 +2277,7 @@ function reorderTracks(from, to) {
   tracks.splice(to, 0, moved);
   if (currentTrack) current = tracks.indexOf(currentTrack);
   renderPlaylist();
-  persistOrder();
+  persistMeta();
 }
 
 function renderPlaylist() {
@@ -2374,15 +2364,24 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// Persist the current playlist order: write each persisted track's `ord` to
-// match its array index. Call after any reorder (sort, drag, remove). Uses
-// idb.patchAll so only `ord` changes — the stored blob is never rewritten.
-function persistOrder() {
-  const entries = [];
-  tracks.forEach((t, i) => {
-    if (t.id != null) entries.push({ id: t.id, changes: { ord: i } });
+// Persist all mutable track metadata to localStorage: the playlist order
+// (array of track ids) plus per-track liked/duration. The IndexedDB `tracks`
+// store only ever holds the write-once {name, blob} record, so reorders and
+// likes never re-write a Blob (which corrupts it on Safari). Call after any
+// add / remove / reorder / sort / like / duration change.
+function persistMeta() {
+  const order = [];
+  const meta = {};
+  tracks.forEach(t => {
+    if (t.id == null) return;
+    order.push(t.id);
+    meta[t.id] = { liked: !!t.liked, dur: t.dur || 0 };
   });
-  if (entries.length) idb.patchAll(entries).catch(err => console.warn('order persist failed', err));
+  try {
+    localStorage.setItem('mv.trackMeta', JSON.stringify({ order, meta }));
+  } catch (err) {
+    console.warn('track meta persist failed', err);
+  }
 }
 
 // ---- MP3 metadata parser (ID3v2, ID3v1, MPEG frame header, Xing/Info/LAME) ----
@@ -2926,10 +2925,11 @@ function addFiles(files) {
     const t = { id: null, name: f.name.replace(/\.mp3$/i, ''), url, dur: 0, blob: f, liked: false };
     tracks.push(t);
     added.push(t);
-    const ord = tracks.length - 1;
-    // persist to IDB; assign id when known. `ord` records append position.
-    idb.add({ name: t.name, dur: 0, blob: f, liked: false, ord }).then(id => {
+    // Write-once {name, blob} record; assign id when known, then persist the
+    // updated order/metadata to localStorage.
+    idb.add({ name: t.name, blob: f }).then(id => {
       t.id = id;
+      persistMeta();
     }).catch(err => console.warn('persist failed', err));
   }
   if (added.length) {
@@ -2942,9 +2942,7 @@ function addFiles(files) {
 function toggleLike(i) {
   const t = tracks[i];
   t.liked = !t.liked;
-  if (t.id != null) {
-    idb.patch(t.id, { liked: t.liked }).catch(() => {});
-  }
+  persistMeta();
   renderPlaylist();
 }
 
@@ -2955,7 +2953,7 @@ function sortPlaylistByName() {
   tracks.sort((a, b) => coll.compare(a.name, b.name));
   if (currentTrack) current = tracks.indexOf(currentTrack);
   renderPlaylist();
-  persistOrder();
+  persistMeta();
 }
 
 function removeTrack(i) {
@@ -2977,7 +2975,7 @@ function removeTrack(i) {
     current--;
   }
   renderPlaylist();
-  persistOrder();
+  persistMeta();
 }
 
 async function playIndex(i) {
@@ -3029,9 +3027,7 @@ async function playIndex(i) {
   if (current !== i) return; // user switched while decoding
   if (dur != null && dur > 0 && (!t.dur || Math.abs(t.dur - dur) > 0.5)) {
     t.dur = dur;
-    if (t.id != null) {
-      idb.patch(t.id, { dur: t.dur }).catch(() => {});
-    }
+    persistMeta();
     renderPlaylist();
   }
   durEl.textContent = fmtTime(Player.duration);
@@ -3093,19 +3089,32 @@ idb.all().then(records => {
     if (localStorage.getItem('mv.hideWelcome') !== '1') welcome.classList.remove('hidden');
     return;
   }
-  // Restore the saved playlist order. `ord` is the custom order; fall back to
-  // insertion order (id) for records saved before ordering was added.
+  // Merge the write-once IDB blob records with mutable metadata (order,
+  // liked, duration) from localStorage. Records with `dur`/`liked` fields
+  // (saved before the localStorage split) fall back to those.
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('mv.trackMeta') || '{}'); } catch {}
+  const savedOrder = Array.isArray(saved.order) ? saved.order : [];
+  const savedMeta = (saved.meta && typeof saved.meta === 'object') ? saved.meta : {};
+  const orderPos = new Map(savedOrder.map((id, i) => [id, i]));
+  // Saved order first (by position), then any unknown records by id.
   records.sort((a, b) => {
-    const ao = a.ord != null ? a.ord : a.id;
-    const bo = b.ord != null ? b.ord : b.id;
-    return ao - bo;
+    const ap = orderPos.has(a.id) ? orderPos.get(a.id) : 1e9 + a.id;
+    const bp = orderPos.has(b.id) ? orderPos.get(b.id) : 1e9 + b.id;
+    return ap - bp;
   });
   for (const rec of records) {
     const url = URL.createObjectURL(rec.blob);
-    tracks.push({ id: rec.id, name: rec.name, url, dur: rec.dur || 0, blob: rec.blob, liked: !!rec.liked });
+    const m = savedMeta[rec.id] || {};
+    tracks.push({
+      id: rec.id, name: rec.name, url, blob: rec.blob,
+      dur: m.dur != null ? m.dur : (rec.dur || 0),
+      liked: m.liked != null ? !!m.liked : !!rec.liked,
+    });
   }
   welcome.classList.add('hidden');
   renderPlaylist();
+  persistMeta();  // normalise: write metadata in the new format
 }).catch(err => console.warn('playlist restore failed', err));
 
 // Preload the Trails Stream effect during idle time so switching to it is
