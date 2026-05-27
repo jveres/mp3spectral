@@ -879,183 +879,6 @@ void main(){
 }
 `;
 
-// ---- Plasma Globe: ray-marched volumetric (after nimitz, Shadertoy XsjXRm) ----
-const FS_PLASMA = FS_COMMON + `
-#define NUM_RAYS  5
-#define MAX_ITER  25
-#define VOL_STEPS 12
-#define FAR       6.0
-
-float hash1(float n){ return fract(sin(n)*43758.5453); }
-
-// cheap value 3D noise
-float noise3(vec3 p){
-  vec3 ip = floor(p);
-  vec3 f  = fract(p);
-  f = f*f*(3.0 - 2.0*f);
-  float n = ip.x + ip.y*57.0 + ip.z*113.0;
-  return mix(
-    mix(mix(hash1(n), hash1(n+1.0), f.x),
-        mix(hash1(n+57.0), hash1(n+58.0), f.x), f.y),
-    mix(mix(hash1(n+113.0), hash1(n+114.0), f.x),
-        mix(hash1(n+170.0), hash1(n+171.0), f.x), f.y),
-    f.z);
-}
-
-const mat3 m3 = mat3(
-   0.00,  0.80,  0.60,
-  -0.80,  0.36, -0.48,
-  -0.60, -0.48,  0.64
-);
-
-float flow3(vec3 p, float t){
-  float z = 2.0, rz = 0.0;
-  vec3 bp = p;
-  for (int i = 0; i < 4; i++){
-    p += t*0.1;
-    rz += (sin(noise3(p + t*0.8)*6.0)*0.5 + 0.5) / z;
-    p = mix(bp, p, 0.6);
-    z *= 2.0;
-    p *= 2.01;
-    p = m3 * p;
-  }
-  return rz;
-}
-
-float sins(float x, float t){
-  float rz = 0.0, z = 2.0;
-  for (int i = 0; i < 3; i++){
-    rz += abs(fract(x*1.4) - 0.5) / z;
-    x *= 1.3;
-    z *= 1.15;
-    x -= t*0.65*z;
-  }
-  return rz;
-}
-
-float segm(vec3 p, vec3 a, vec3 b){
-  vec3 pa = p - a;
-  vec3 ba = b - a;
-  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-  return length(pa - ba*h) * 0.5;
-}
-
-vec3 boltPath(float i, float d, float t){
-  vec3 en = vec3(0.0, 0.0, 1.0);
-  float sns2 = sins(d + i*0.5, t)*0.22;
-  float sns  = sins(d + i*0.6, t)*0.21;
-  en.xz = rot((hash1(i*10.569) - 0.5)*6.2 + sns2) * en.xz;
-  en.xy = rot((hash1(i*4.732 ) - 0.5)*6.2 + sns ) * en.xy;
-  return en;
-}
-
-vec2 boltMap(vec3 p, float i, float t){
-  float lp = length(p);
-  vec3 en = boltPath(i, lp, t);
-  float ins  = smoothstep(0.11, 0.46, lp);
-  float outs = 0.15 + smoothstep(0.0, 0.15, abs(lp - 1.0));
-  p *= ins*outs;
-  float id = ins*outs;
-  float rz = segm(p, vec3(0.0), en) - 0.011;
-  return vec2(rz, id);
-}
-
-float boltMarch(vec3 ro, vec3 rd, float startf, float maxd, float j, float t){
-  float h = 0.5;
-  float d = startf;
-  for (int i = 0; i < MAX_ITER; i++){
-    if (abs(h) < 0.001 || d > maxd) break;
-    d += h*1.2;
-    h = boltMap(ro + rd*d, j, t).x;
-  }
-  return d;
-}
-
-vec3 boltVMarch(vec3 ro, vec3 rd, float j, vec3 orig, float t, float specBin){
-  vec3 p = ro;
-  vec3 sum = vec3(0.0);
-  // tint the bolt slightly per spectrum bin
-  vec3 tint = vec3(1.0, 0.85 + 0.15*specBin, 1.05 - 0.20*specBin);
-  for (int i = 0; i < VOL_STEPS; i++){
-    vec2 r = boltMap(p, j, t);
-    p += rd * 0.03;
-    float lp = length(p);
-    vec3 col = sin(vec3(1.05, 2.5, 1.52)*3.94 + r.y) * 0.85 + 0.4;
-    col *= smoothstep(0.0,  0.015, -r.x);
-    col *= smoothstep(0.04, 0.20, abs(lp - 1.1));
-    col *= smoothstep(0.10, 0.34, lp);
-    sum += abs(col) * 5.0 * tint
-         * (1.2 - noise3(vec3(lp*2.0 + j*13.0 + t*5.0)) * 1.1)
-         / (log(distance(p, orig) - 2.0) + 0.75);
-  }
-  return sum;
-}
-
-vec2 iSphere2(vec3 ro, vec3 rd){
-  vec3 oc = ro;
-  float b = dot(oc, rd);
-  float c = dot(oc, oc) - 1.0;
-  float h = b*b - c;
-  if (h < 0.0) return vec2(-1.0);
-  return vec2(-b - sqrt(h), -b + sqrt(h));
-}
-
-void main(){
-  float t = uTime * 0.35;                        // global animation slowdown
-  vec2 p = (gl_FragCoord.xy - uRes.xy*0.5) / uRes.y;
-  vec3 ro = vec3(0.0, 0.0, 5.0);
-  vec3 rd = normalize(vec3(p*0.7, -1.5));
-  // gentle auto-rotation
-  float rotSpeed = 0.12 + uMid*0.10;
-  mat2 mx = rot(t*rotSpeed);
-  mat2 my = rot(t*0.10);
-  ro.xz = mx*ro.xz; rd.xz = mx*rd.xz;
-  ro.xy = my*ro.xy; rd.xy = my*rd.xy;
-  vec3 bro = ro;
-  vec3 brd = rd;
-
-  vec3 col = vec3(0.0125, 0.0, 0.025);
-
-  for (int j = 1; j <= NUM_RAYS; j++){
-    float fj = float(j);
-    ro = bro; rd = brd;
-    mat2 mm = rot((t*0.1 + (fj + 1.0)*5.1) * fj * 0.25);
-    ro.xy = mm*ro.xy; rd.xy = mm*rd.xy;
-    ro.xz = mm*ro.xz; rd.xz = mm*rd.xz;
-    float rz = boltMarch(ro, rd, 2.5, FAR, fj, t);
-    if (rz < FAR){
-      vec3 pos = ro + rz*rd;
-      // each ray driven by a different spectrum bin
-      float specBin = pow(texture2D(uSpec, vec2(fj/float(NUM_RAYS+1), 0.5)).r, 0.7);
-      vec3 contrib = boltVMarch(pos, rd, fj, bro, t, specBin)
-                     * (0.7 + 1.6*specBin + 1.5*uBeat*exp(-uBeatT*2.0));
-      col = max(col, contrib);
-    }
-  }
-
-  // sphere surface reflection (the iconic flowing plasma sheen)
-  ro = bro; rd = brd;
-  vec2 sph = iSphere2(ro, rd);
-  if (sph.x > 0.0){
-    vec3 pos  = ro + rd*sph.x;
-    vec3 pos2 = ro + rd*sph.y;
-    vec3 rf  = reflect(rd, pos);
-    vec3 rf2 = reflect(rd, pos2);
-    float nz  = -log(abs(flow3(rf *1.2,  t) - 0.01));
-    float nz2 = -log(abs(flow3(rf2*1.2, -t) - 0.01));
-    col += (0.10 * nz*nz  * vec3(0.12, 0.12, 0.50)
-         + 0.05 * nz2*nz2 * vec3(0.55, 0.20, 0.55)) * 0.8
-         * (1.0 + uBass*0.6);
-    // beat flash on sphere surface
-    col += vec3(0.5, 0.7, 1.0) * uBeat * 0.6;
-  }
-
-  // overall bass swell
-  col *= 1.3 + uBass*0.4;
-  gl_FragColor = vec4(col, 1.0);
-}
-`;
-
 // ---- Photos: image slideshow with animated transitions and Ken Burns ----
 const FS_PHOTOS = FS_COMMON + `
 uniform sampler2D uTexA;
@@ -1779,7 +1602,6 @@ const EFFECTS = [
   { name: 'Star Nest',     src: FS_GALAXY },
   { name: 'Synthwave',     src: FS_SYNTHWAVE },
   { name: 'Kali',          src: FS_KALI },
-  { name: 'Plasma Globe',  src: FS_PLASMA },
   { name: 'Trails Stream', external: 'trails' },
   { name: 'Photos',        src: FS_PHOTOS },
 ];
@@ -2031,16 +1853,17 @@ const Player = (() => {
   // see the interrupt we fully rebuild the audio graph on the next loadBlob.
   let needsRebuild = false;
 
-  function hookAnalyser() {
+  function hookAnalyser(force) {
     if (typeof Howler === 'undefined' || !Howler.ctx || !Howler.masterGain) return;
     if (!analyser) {
       analyser = Howler.ctx.createAnalyser();
       analyser.fftSize = 1024;
       analyser.smoothingTimeConstant = 0.82;
     }
-    // Splice analyser between Howler.masterGain and the destination. Re-runnable:
-    // browsers can drop/rewire connections across an AudioContext interruption
-    // (other tab takes audio focus), so we re-apply the splice on context resume.
+    // Idempotent: re-splicing during playback briefly disconnects masterGain
+    // from the graph and causes an audible click. Only re-wire when we've never
+    // hooked, or when an interruption may have torn down the connections.
+    if (analyserHooked && !force) return;
     try { Howler.masterGain.disconnect(); } catch {}
     try { analyser.disconnect(); } catch {}
     Howler.masterGain.connect(analyser);
@@ -2067,10 +1890,13 @@ const Player = (() => {
     dlog('[audio] ctx statechange ->', s);
     if (s === 'interrupted' || s === 'suspended' || s === 'closed') {
       needsRebuild = true;
+      analyserHooked = false;  // connections likely torn down
     }
     if (s === 'running') {
-      hookAnalyser();
-      nudgeSource();
+      // Force a re-hook only if an interruption was observed (otherwise
+      // re-splicing during normal playback causes an audible click).
+      hookAnalyser(needsRebuild);
+      if (needsRebuild) nudgeSource();
     }
   }
 
@@ -2159,10 +1985,15 @@ const Player = (() => {
     recover() {
       if (typeof Howler === 'undefined' || !Howler.ctx) return;
       const ctx = Howler.ctx;
+      // Chrome/Firefox keep the ctx + graph alive across tab switches: in that
+      // case the only safe action is a no-op (resume on an already-running ctx
+      // is fine, but re-splicing the analyser or re-seeking the source would
+      // cause an audible click/glitch on every tab return). Only do the heavy
+      // recovery work if we actually saw the ctx leave 'running'.
+      if (ctx.state === 'running' && !needsRebuild) return;
       try { ctx.resume(); } catch {}
-      const apply = () => { hookAnalyser(); nudgeSource(); };
+      const apply = () => { hookAnalyser(true); nudgeSource(); };
       if (ctx.state === 'running') apply();
-      // Schedule a follow-up in case resume() needed a tick to take effect.
       setTimeout(() => { if (ctx.state === 'running') apply(); }, 80);
       setTimeout(() => { if (ctx.state === 'running') apply(); }, 300);
     },

@@ -1,7 +1,7 @@
 # WebGL MP3 Visualizer
 
 A single-file, near-zero-build, fully-local browser app: drop MP3 files onto
-the page, get a playlist plus seven audio-reactive WebGL effects driven by the
+the page, get a playlist plus six audio-reactive WebGL effects driven by the
 Web Audio API. Optionally point it at a folder of images and the **Photos**
 effect runs them as a beat-aware slideshow. Audio decode and image rendering
 all happen client-side; nothing is uploaded.
@@ -86,7 +86,6 @@ effect index is persisted in `localStorage`.
 | Star Nest     | Port of Pablo Román Andrioli's classic Shadertoy fractal     |
 | Synthwave     | Retro grid + sun + green/yellow/red VU bars; palette cycles  |
 | Kali          | Kali-set IFS fractal with orbit-trap glow                    |
-| Plasma Globe  | Ray-marched volumetric plasma globe (after nimitz)           |
 | Trails Stream | Three.js scene: light streams down a tunnel under a Milky Way background |
 | Photos        | Slideshow of user-loaded images with animated transitions    |
 
@@ -186,7 +185,6 @@ Everything (apart from the Howler.js and Three.js CDN loads) is in
 - [Three.js](https://threejs.org/) — MIT.
 - [Star Nest](https://www.shadertoy.com/view/XlfGRj) by Pablo Román Andrioli
   ("Kali") — MIT.
-- [Plasma Globe](https://www.shadertoy.com/view/XsjXRm) by nimitz — CC BY-NC-SA.
 - The Trails Stream's Milky Way background adapts a community Shadertoy
   (metaDiamond stars + domain-warped fbm nebula).
 
